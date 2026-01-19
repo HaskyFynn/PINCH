@@ -1,14 +1,17 @@
 """
-PINCH Live System (single script) - Click UI + Enrollment + Trials + Logging
+PINCH Live System (single script)
+- Modern OpenCV UI
+- Live mode (webcam): Enrollment + Trials
+- Demo mode (video): Demo Enrollment + Demo Trials
+- Pipeline: YOLO + ByteTrack + ResNet embedder + prototype matching
+- Logging: minimal, paper-relevant CSV + JSON summary + confusion matrix (optional GT)
 
-- Pure OpenCV UI (mouse clicks for menus, toggles, GT assignment)
-- Enrollment: guided steps, builds prototypes from embeddings
-- Trials: YOLO + ByteTrack + embedder + prototype match per track
-- Logging: minimal paper metrics (latency, track loss, switches, accuracy if GT)
-- No tkinter
-
-Dependencies:
+Install:
 pip install ultralytics opencv-python torch torchvision numpy pandas matplotlib pillow
+
+Notes:
+- Windows file picker uses a Tk fallback and Win32 dialog. If it fails, paste a path (Ctrl+V) in the UI field.
+- If MOV decode fails, convert to MP4 (H.264) then retry.
 """
 
 import os
@@ -32,26 +35,21 @@ import torchvision.models as models
 import matplotlib.pyplot as plt
 from ultralytics import YOLO
 
-
 # ============================================================
-# USER SETTINGS (EDIT THESE)
+# USER SETTINGS
 # ============================================================
-YOLO_WEIGHTS = r"C:\path\to\yolo_best.pt"
-EMBEDDER_WEIGHTS = r"C:\path\to\embedder_resnet18_triplet.pt"
-RUN_DIR = r"C:\path\to\runs\pinch_live"
+YOLO_WEIGHTS = r"C:\Users\USER\Desktop\my_pinch\Pinch-Model\hasky\letsgo\best.pt"
+EMBEDDER_WEIGHTS = r"C:\Users\USER\Desktop\my_pinch\Pinch-Model\hasky\letsgo\embedder_resnet18_triplet.pt"
+RUN_DIR = r"C:\Users\USER\Desktop\my_pinch\Pinch-Model\hasky\letsgo\pinch_live"
 
-USE_WEBCAM = True
 WEBCAM_INDEX = 0
-VIDEO_PATH = r""  # used if USE_WEBCAM=False
 
-MAX_MARKERS = 4
-
-# UI canvas size (fixed to keep mouse mapping correct)
+# Fixed canvas for consistent UI
 CANVAS_W = 1280
 CANVAS_H = 720
 
 # Detection + tracking
-DET_CONF = 0.50
+DET_CONF = 0.15
 DET_IOU = 0.70
 TRACKER_YAML = "bytetrack.yaml"
 
@@ -68,13 +66,13 @@ USE_AMP = (DEVICE == "cuda")
 # Prototypes
 PROTOS_PER_MARKER = 5
 PROTOS_KMEANS_ITERS = 18
-THRESH_PERCENTILE = 5  # marker threshold = this percentile of enrollment sims
+THRESH_PERCENTILE = 5
 
-# Track identity smoothing
+# Track smoothing
 EMA_ALPHA = 0.70
 DECISION_HYST = 0.05
 
-# Enrollment guidance (seconds)
+# Enrollment steps (seconds)
 ENROLL_STEPS = [
     ("Hold front-facing", 8),
     ("Swipe left-right", 10),
@@ -84,27 +82,46 @@ ENROLL_STEPS = [
     ("Tilt + motion", 8),
 ]
 
-# Trial durations (seconds)
+# Trial durations
 TRIAL_SWIPE_SEC = 12
 TRIAL_INTERFERE_SEC = 18
 TRIAL_REENTRY_SEC = 18
 
 # ============================================================
-# UI colors (modern dark)
+# UI THEME (studio)
 # ============================================================
-BG = (22, 22, 26)
-PANEL = (28, 28, 34)
-ACCENT = (0, 180, 255)
-ACCENT2 = (0, 220, 255)
-TEXT = (230, 230, 235)
-MUTED = (160, 160, 170)
-OK = (0, 255, 100)
-WARN = (255, 80, 80)
-UNKNOWN = (0, 150, 255)
+BG = (18, 22, 32)
+BG_TOP = (10, 14, 22)
+BG_GLOW_1 = (28, 62, 90)
+BG_GLOW_2 = (20, 80, 120)
+CARD = (26, 30, 40)
+CARD2 = (32, 38, 52)
+STROKE = (70, 82, 100)
+ACCENT = (64, 200, 255)
+ACCENT_HI = (90, 224, 255)
+ACCENT_SOFT = (80, 150, 210)
+OK = (72, 220, 150)
+WARN = (80, 95, 255)
+TEXT = (240, 242, 248)
+MUTED = (170, 178, 188)
+WHITE = (250, 250, 252)
+BTN_SECONDARY = (84, 94, 116)
+BTN_DISABLED = (60, 66, 78)
+INPUT_BG = (22, 26, 36)
+INPUT_ACTIVE = (30, 38, 58)
 
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT_TITLE = cv2.FONT_HERSHEY_DUPLEX
+UI_SCALE = 1.08
+
+TOPBAR_H = 76
+SIDEBAR_W = 360
+UI_PAD = 18
+
+VIDEO_EXTS = (".mp4", ".avi", ".mov", ".m4v", ".MP4", ".AVI", ".MOV", ".M4V")
 
 # ============================================================
-# Helpers
+# HELPERS
 # ============================================================
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
@@ -122,32 +139,6 @@ def safe_norm(v: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(v) + 1e-12
     return v / n
 
-def alpha_rect(img, x1, y1, x2, y2, color, alpha=0.60):
-    overlay = img.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
-
-def put_text(img, text, org, scale=0.62, thick=2, color=TEXT):
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
-
-def draw_rounded_rect(img, x1, y1, x2, y2, r=12, color=PANEL, thickness=-1):
-    # Simple rounded rect using circles + rects
-    if thickness != -1:
-        cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, thickness)
-        cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, thickness)
-        cv2.circle(img, (x1 + r, y1 + r), r, color, thickness)
-        cv2.circle(img, (x2 - r, y1 + r), r, color, thickness)
-        cv2.circle(img, (x1 + r, y2 - r), r, color, thickness)
-        cv2.circle(img, (x2 - r, y2 - r), r, color, thickness)
-        return
-
-    cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, -1)
-    cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, -1)
-    cv2.circle(img, (x1 + r, y1 + r), r, color, -1)
-    cv2.circle(img, (x2 - r, y1 + r), r, color, -1)
-    cv2.circle(img, (x1 + r, y2 - r), r, color, -1)
-    cv2.circle(img, (x2 - r, y2 - r), r, color, -1)
-
 def clamp_box(x1, y1, x2, y2, w, h):
     x1 = max(0, min(int(x1), w - 1))
     x2 = max(0, min(int(x2), w - 1))
@@ -161,26 +152,367 @@ def lap_var(bgr: np.ndarray) -> float:
     g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     return cv2.Laplacian(g, cv2.CV_64F).var()
 
-def open_source():
-    if USE_WEBCAM:
-        cap = cv2.VideoCapture(WEBCAM_INDEX, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(WEBCAM_INDEX)
-        return cap
-    cap = cv2.VideoCapture(VIDEO_PATH, cv2.CAP_FFMPEG)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(VIDEO_PATH)
-    return cap
+def draw_text(img, s, x, y, scale=0.6, color=TEXT, thick=2, font=None, shadow=False):
+    f = font or FONT
+    scale = scale * UI_SCALE
+    if shadow:
+        cv2.putText(img, s, (x + 1, y + 1), f, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
+    cv2.putText(img, s, (x, y), f, scale, color, thick, cv2.LINE_AA)
 
+def text_size(s, scale=0.6, thick=2, font=None):
+    f = font or FONT
+    return cv2.getTextSize(s, f, scale * UI_SCALE, thick)[0]
+
+def alpha_rect(img, x1, y1, x2, y2, color, alpha=0.65):
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+
+def rounded_rect(img, x1, y1, x2, y2, r=14, color=CARD, thickness=-1):
+    if thickness != -1:
+        cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, thickness)
+        cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, thickness)
+        cv2.circle(img, (x1 + r, y1 + r), r, color, thickness)
+        cv2.circle(img, (x2 - r, y1 + r), r, color, thickness)
+        cv2.circle(img, (x1 + r, y2 - r), r, color, thickness)
+        cv2.circle(img, (x2 - r, y2 - r), r, color, thickness)
+        return
+    cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, -1)
+    cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, -1)
+    cv2.circle(img, (x1 + r, y1 + r), r, color, -1)
+    cv2.circle(img, (x2 - r, y1 + r), r, color, -1)
+    cv2.circle(img, (x1 + r, y2 - r), r, color, -1)
+    cv2.circle(img, (x2 - r, y2 - r), r, color, -1)
+
+def shadow_card(img, x1, y1, x2, y2, r=16, shadow=10):
+    alpha_rect(img, x1 + shadow, y1 + shadow, x2 + shadow, y2 + shadow, (0, 0, 0), alpha=0.28)
+    rounded_rect(img, x1, y1, x2, y2, r=r, color=CARD, thickness=-1)
+    rounded_rect(img, x1, y1, x2, y2, r=r, color=STROKE, thickness=2)
+    cv2.line(img, (x1 + r, y1 + 2), (x2 - r, y1 + 2), tint(CARD, 0.18), 1)
+
+_BG_CACHE = None
+_BG_CACHE_SHAPE = None
+
+def gradient_bg(canvas):
+    global _BG_CACHE, _BG_CACHE_SHAPE
+    h, w = canvas.shape[:2]
+    if _BG_CACHE is None or _BG_CACHE_SHAPE != (h, w):
+        top = np.array(BG_TOP, dtype=np.float32)
+        bot = np.array(BG, dtype=np.float32)
+        grad = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
+        col = (1 - grad) * top + grad * bot
+        bg = np.repeat(col[:, None, :], w, axis=1).astype(np.uint8)
+
+        glow = bg.copy()
+        cv2.circle(glow, (int(w * 0.18), int(h * 0.08)), int(h * 0.65), BG_GLOW_1, -1)
+        cv2.circle(glow, (int(w * 0.88), int(h * 0.12)), int(h * 0.55), BG_GLOW_2, -1)
+        cv2.addWeighted(glow, 0.18, bg, 0.82, 0, bg)
+
+        noise = np.random.randint(0, 6, size=(h, w, 1), dtype=np.uint8)
+        bg = np.clip(bg + noise, 0, 255).astype(np.uint8)
+
+        _BG_CACHE = bg
+        _BG_CACHE_SHAPE = (h, w)
+    canvas[:] = _BG_CACHE
+
+def point_in(x, y, r):
+    rx, ry, rw, rh = r
+    return (rx <= x <= rx + rw) and (ry <= y <= ry + rh)
+
+def truncate_path(p, max_chars=52):
+    if not p:
+        return ""
+    if len(p) <= max_chars:
+        return p
+    head = p[: int(max_chars * 0.35)]
+    tail = p[-int(max_chars * 0.55):]
+    return head + "..." + tail
+
+def window_closed(win_name: str) -> bool:
+    try:
+        v = cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE)
+        return v < 1
+    except Exception:
+        return True
+
+def mix_color(a, b, t: float) -> Tuple[int, int, int]:
+    return tuple(int(a[i] * (1 - t) + b[i] * t) for i in range(3))
+
+def tint(color, t: float) -> Tuple[int, int, int]:
+    return mix_color(color, (255, 255, 255), t)
+
+def shade(color, t: float) -> Tuple[int, int, int]:
+    return mix_color(color, (0, 0, 0), t)
+
+def normalize_path(p: str) -> str:
+    if not p:
+        return ""
+    p = p.strip().strip('"').strip("'")
+    if p.lower().startswith("file://"):
+        p = p.replace("file:///", "", 1)
+        p = p.replace("file://", "", 1)
+    p = os.path.expandvars(os.path.expanduser(p))
+    if os.name == "nt":
+        p = p.replace("/", "\\")
+    return os.path.normpath(p)
+
+def get_clipboard_text() -> str:
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        CF_UNICODETEXT = 13
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        if not user32.OpenClipboard(None):
+            return ""
+        handle = user32.GetClipboardData(CF_UNICODETEXT)
+        if not handle:
+            user32.CloseClipboard()
+            return ""
+        pcontents = kernel32.GlobalLock(handle)
+        if not pcontents:
+            user32.CloseClipboard()
+            return ""
+        data = ctypes.wstring_at(pcontents)
+        kernel32.GlobalUnlock(handle)
+        user32.CloseClipboard()
+        return data
+    except Exception:
+        try:
+            import ctypes
+
+            ctypes.windll.user32.CloseClipboard()
+        except Exception:
+            pass
+        return ""
+
+def sanitize_clipboard_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace("\r", "\n").split("\n")[0]
+    return text.strip()
+
+def pick_file_tk(title: str, filetypes: List[Tuple[str, str]]) -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        path = filedialog.askopenfilename(title=title, filetypes=filetypes)
+        root.destroy()
+        return path
+    except Exception:
+        return ""
 
 # ============================================================
-# Embedder
+# WINDOWS FILE PICKER (tk fallback + ctypes)
+# ============================================================
+def pick_file_win32(title="Select file", filter_str="All Files\0*.*\0\0") -> Tuple[str, int]:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # Flags
+        OFN_EXPLORER = 0x00080000
+        OFN_FILEMUSTEXIST = 0x00001000
+        OFN_PATHMUSTEXIST = 0x00000800
+        OFN_NOCHANGEDIR = 0x00000008
+        OFN_DONTADDTORECENT = 0x02000000
+
+        class OPENFILENAMEW(ctypes.Structure):
+            _fields_ = [
+                ("lStructSize", wintypes.DWORD),
+                ("hwndOwner", wintypes.HWND),
+                ("hInstance", wintypes.HINSTANCE),
+                ("lpstrFilter", wintypes.LPCWSTR),
+                ("lpstrCustomFilter", wintypes.LPWSTR),
+                ("nMaxCustFilter", wintypes.DWORD),
+                ("nFilterIndex", wintypes.DWORD),
+                ("lpstrFile", wintypes.LPWSTR),
+                ("nMaxFile", wintypes.DWORD),
+                ("lpstrFileTitle", wintypes.LPWSTR),
+                ("nMaxFileTitle", wintypes.DWORD),
+                ("lpstrInitialDir", wintypes.LPCWSTR),
+                ("lpstrTitle", wintypes.LPCWSTR),
+                ("Flags", wintypes.DWORD),
+                ("nFileOffset", wintypes.WORD),
+                ("nFileExtension", wintypes.WORD),
+                ("lpstrDefExt", wintypes.LPCWSTR),
+                ("lCustData", wintypes.LPARAM),
+                ("lpfnHook", wintypes.LPVOID),
+                ("lpTemplateName", wintypes.LPCWSTR),
+                ("pvReserved", wintypes.LPVOID),
+                ("dwReserved", wintypes.DWORD),
+                ("FlagsEx", wintypes.DWORD),
+            ]
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        try:
+            user32.SetForegroundWindow(hwnd)
+            user32.BringWindowToTop(hwnd)
+        except Exception:
+            pass
+
+        buf = ctypes.create_unicode_buffer(4096)
+        buf.value = ""
+
+        ofn = OPENFILENAMEW()
+        ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
+        ofn.hwndOwner = hwnd
+        ofn.lpstrFilter = filter_str
+        ofn.lpstrFile = buf
+        ofn.nMaxFile = 4096
+        ofn.lpstrTitle = title
+        ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_DONTADDTORECENT
+
+        ok = ctypes.windll.comdlg32.GetOpenFileNameW(ctypes.byref(ofn))
+        if ok:
+            return buf.value, 0
+        err = ctypes.windll.comdlg32.CommDlgExtendedError()
+        return "", int(err)
+    except Exception:
+        return "", 1
+
+def pick_file_windows(title="Select file", filter_str="All Files\0*.*\0\0", filetypes: Optional[List[Tuple[str, str]]] = None) -> str:
+    if os.name != "nt":
+        return ""
+
+    if filetypes:
+        path = pick_file_tk(title, filetypes)
+        if path:
+            return path
+
+    path, err = pick_file_win32(title=title, filter_str=filter_str)
+    if path:
+        return path
+
+    if err != 0:
+        fallback_types = filetypes or [("All Files", "*.*")]
+        return pick_file_tk(title, fallback_types)
+    return ""
+
+def pick_video_file_windows(title="Select video") -> str:
+    flt = "Video Files\0*.mp4;*.avi;*.mov;*.m4v\0All Files\0*.*\0\0"
+    ftypes = [("Video Files", "*.mp4 *.avi *.mov *.m4v"), ("All Files", "*.*")]
+    return pick_file_windows(title=title, filter_str=flt, filetypes=ftypes)
+
+def pick_registry_file_windows(title="Select registry json") -> str:
+    flt = "JSON\0*.json\0All Files\0*.*\0\0"
+    ftypes = [("JSON", "*.json"), ("All Files", "*.*")]
+    return pick_file_windows(title=title, filter_str=flt, filetypes=ftypes)
+
+# ============================================================
+# VIDEO SOURCE
+# ============================================================
+class VideoSource:
+    def __init__(self):
+        self.cap = None
+        self.mode = "webcam"  # webcam or video
+        self.webcam_index = WEBCAM_INDEX
+        self.video_path = ""
+        self.loop = True
+
+    def open_webcam(self, index=0):
+        self.release()
+        self.mode = "webcam"
+        self.webcam_index = index
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(index)
+        self.cap = cap
+        return self.is_opened()
+
+    def open_video(self, path: str, loop=True):
+        self.release()
+        self.mode = "video"
+        path = normalize_path(path)
+        if path:
+            path = os.path.abspath(path)
+        self.video_path = path
+        self.loop = loop
+        cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(path)
+        self.cap = cap
+        return self.is_opened()
+
+    def is_opened(self):
+        return self.cap is not None and self.cap.isOpened()
+
+    def read(self):
+        if not self.is_opened():
+            return False, None
+        ok, frame = self.cap.read()
+        if ok and frame is not None:
+            return True, frame
+
+        if self.mode == "video" and self.loop and self.video_path:
+            try:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok2, frame2 = self.cap.read()
+                if ok2 and frame2 is not None:
+                    return True, frame2
+            except Exception:
+                pass
+        return False, None
+
+    def release(self):
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+        self.cap = None
+
+    def describe(self):
+        if self.mode == "webcam":
+            return f"Webcam {self.webcam_index}"
+        if self.video_path:
+            return "Video: " + os.path.basename(self.video_path)
+        return "Video"
+
+# ============================================================
+# CANVAS COMPOSITION
+# ============================================================
+def compose_canvas(frame_bgr: np.ndarray) -> Tuple[np.ndarray, float, int, int, Tuple[int, int, int, int]]:
+    canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
+    gradient_bg(canvas)
+
+    left_w = SIDEBAR_W
+    pad = UI_PAD
+    vx1, vy1 = left_w + pad, TOPBAR_H + 16
+    vx2, vy2 = CANVAS_W - pad, CANVAS_H - pad
+    shadow_card(canvas, vx1, vy1, vx2, vy2, r=18, shadow=10)
+
+    fh, fw = frame_bgr.shape[:2]
+    vw, vh = (vx2 - vx1) - 16, (vy2 - vy1) - 16
+    s = min(vw / max(fw, 1), vh / max(fh, 1))
+    s = max(min(s, 1.0), 1e-6)
+    rw, rh = int(fw * s), int(fh * s)
+    resized = cv2.resize(frame_bgr, (rw, rh), interpolation=cv2.INTER_AREA)
+
+    offx = vx1 + 8 + (vw - rw) // 2
+    offy = vy1 + 8 + (vh - rh) // 2
+    canvas[offy:offy + rh, offx:offx + rw] = resized
+
+    view_rect = (offx, offy, rw, rh)
+    return canvas, s, offx, offy, view_rect
+
+# ============================================================
+# EMBEDDER
 # ============================================================
 class ResnetEmbedder(nn.Module):
     def __init__(self, embed_dim: int = 128):
         super().__init__()
         m = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-        in_features = m.fc.in_features  # must read before replacing
+        in_features = m.fc.in_features
         m.fc = nn.Identity()
         self.backbone = m
         self.proj = nn.Linear(in_features, embed_dim)
@@ -217,9 +549,8 @@ def embed_crops(model: nn.Module, crops_rgb: List[np.ndarray], device: str) -> n
         z = model(x)
     return z.detach().cpu().numpy().astype(np.float32)
 
-
 # ============================================================
-# Registry + prototypes
+# REGISTRY + PROTOTYPES
 # ============================================================
 @dataclass
 class MarkerProfile:
@@ -228,12 +559,16 @@ class MarkerProfile:
     thr: float
     enroll_frames: int
     enroll_used: int
+    source_mode: str = ""
+    source_path: str = ""
 
 class Registry:
     def __init__(self):
         self.markers: List[MarkerProfile] = []
 
     def add_marker(self, profile: MarkerProfile):
+        # replace same name if exists
+        self.markers = [m for m in self.markers if m.marker_id != profile.marker_id]
         self.markers.append(profile)
 
     def names(self) -> List[str]:
@@ -246,7 +581,7 @@ class Registry:
     def from_json(d: Dict) -> "Registry":
         r = Registry()
         for m in d.get("markers", []):
-            r.add_marker(MarkerProfile(**m))
+            r.markers.append(MarkerProfile(**m))
         return r
 
 def kmeans_prototypes(X: np.ndarray, k: int, iters: int, seed: int = 0) -> np.ndarray:
@@ -268,7 +603,7 @@ def kmeans_prototypes(X: np.ndarray, k: int, iters: int, seed: int = 0) -> np.nd
                 C[j] = Xn[np.random.randint(0, Xn.shape[0])]
     return C.astype(np.float32)
 
-def build_profile_from_enrollment(marker_id: str, embs: np.ndarray) -> MarkerProfile:
+def build_profile_from_enrollment(marker_id: str, embs: np.ndarray) -> Tuple[List[List[float]], float]:
     if embs.shape[0] < 10:
         protos = kmeans_prototypes(embs, k=min(2, embs.shape[0]), iters=8, seed=0)
     else:
@@ -277,18 +612,12 @@ def build_profile_from_enrollment(marker_id: str, embs: np.ndarray) -> MarkerPro
     sims = embs @ protos.T if protos.shape[0] > 0 else np.zeros((embs.shape[0], 1), dtype=np.float32)
     best = sims.max(axis=1) if sims.shape[1] > 0 else np.zeros((embs.shape[0],), dtype=np.float32)
     thr = float(np.percentile(best, THRESH_PERCENTILE)) if best.shape[0] > 0 else 0.0
-
-    return MarkerProfile(
-        marker_id=marker_id,
-        proto=protos.tolist(),
-        thr=thr,
-        enroll_frames=0,
-        enroll_used=int(embs.shape[0]),
-    )
+    return protos.tolist(), thr
 
 def match_marker(emb: np.ndarray, registry: Registry) -> Tuple[str, float]:
     best_name = "unknown"
     best_sim = -1.0
+    best_thr = None
     for m in registry.markers:
         P = np.array(m.proto, dtype=np.float32)
         if P.size == 0:
@@ -297,21 +626,13 @@ def match_marker(emb: np.ndarray, registry: Registry) -> Tuple[str, float]:
         if sim > best_sim:
             best_sim = sim
             best_name = m.marker_id
-
-    if best_name != "unknown":
-        thr = None
-        for m in registry.markers:
-            if m.marker_id == best_name:
-                thr = m.thr
-                break
-        if thr is not None and best_sim < thr:
-            return "unknown", best_sim
-
+            best_thr = m.thr
+    if best_name != "unknown" and best_thr is not None and best_sim < best_thr:
+        return "unknown", best_sim
     return best_name, best_sim
 
-
 # ============================================================
-# Track state
+# TRACK STATE
 # ============================================================
 @dataclass
 class TrackState:
@@ -324,16 +645,13 @@ class TrackState:
     last_seen_frame: int = -1
 
 def update_identity(ts: TrackState, z: np.ndarray, registry: Registry) -> Tuple[str, float]:
-    # update EMA embedding
     if ts.z_ema is None:
         ts.z_ema = z.copy()
     else:
         ts.z_ema = safe_norm(EMA_ALPHA * ts.z_ema + (1.0 - EMA_ALPHA) * z)
 
-    # classify using EMA
     pred, sim = match_marker(ts.z_ema, registry)
 
-    # hysteresis on switching
     if pred != ts.last_name:
         if sim >= ts.last_sim + DECISION_HYST:
             ts.switches += 1
@@ -345,9 +663,8 @@ def update_identity(ts: TrackState, z: np.ndarray, registry: Registry) -> Tuple[
     ts.seen_frames += 1
     return ts.last_name, ts.last_sim
 
-
 # ============================================================
-# Logging
+# LOGGING (paper relevant)
 # ============================================================
 def new_frame_logger():
     cols = [
@@ -385,336 +702,339 @@ def save_confusion_matrix(classes: List[str], cm: np.ndarray, out_path: str):
     plt.savefig(out_path, dpi=200)
     plt.close()
 
-
 # ============================================================
-# UI primitives
+# UI PRIMITIVES
 # ============================================================
 @dataclass
 class Button:
     text: str
-    rect: Tuple[int, int, int, int]  # x,y,w,h
+    rect: Tuple[int, int, int, int]
     enabled: bool = True
     hover: bool = False
     toggled: bool = False
     tag: str = ""
 
-def point_in_rect(x, y, r):
-    rx, ry, rw, rh = r
-    return (rx <= x <= rx + rw) and (ry <= y <= ry + rh)
-
-def draw_button(canvas, b: Button):
+def draw_button(canvas, b: Button, primary=True):
     x, y, w, h = b.rect
+    base = ACCENT if primary else BTN_SECONDARY
+
     if not b.enabled:
-        col = (70, 70, 78)
+        col = BTN_DISABLED
+        stroke = shade(col, 0.25)
+        txt = MUTED
     else:
-        if b.hover:
-            col = ACCENT2
+        if b.toggled:
+            col = mix_color(ACCENT, OK, 0.35)
         else:
-            col = ACCENT
-    if b.toggled:
-        col = (0, 210, 170)
+            col = base
+        if b.hover:
+            col = tint(col, 0.12)
+        stroke = tint(col, 0.18)
+        txt = WHITE
 
-    draw_rounded_rect(canvas, x, y, x + w, y + h, r=14, color=col, thickness=-1)
-    draw_rounded_rect(canvas, x, y, x + w, y + h, r=14, color=(0, 0, 0), thickness=2)
+    alpha_rect(canvas, x + 6, y + 8, x + w + 6, y + h + 8, (0, 0, 0), alpha=0.28)
+    rounded_rect(canvas, x, y, x + w, y + h, r=16, color=col, thickness=-1)
+    alpha_rect(canvas, x + 2, y + 2, x + w - 2, y + h // 2, tint(col, 0.2), alpha=0.25)
+    rounded_rect(canvas, x, y, x + w, y + h, r=16, color=stroke, thickness=2)
 
-    ts = cv2.getTextSize(b.text, cv2.FONT_HERSHEY_SIMPLEX, 0.66, 2)[0]
+    ts = text_size(b.text, scale=0.6, thick=2)
     tx = x + (w - ts[0]) // 2
     ty = y + (h + ts[1]) // 2
-    put_text(canvas, b.text, (tx, ty), scale=0.66, thick=2, color=TEXT)
+    draw_text(canvas, b.text, tx, ty, scale=0.6, color=txt, thick=2)
 
+def draw_input(canvas, rect, label, value, placeholder="", active=False, hint=""):
+    x, y, w, h = rect
+    draw_text(canvas, label, x, y - 10, scale=0.48, color=MUTED, thick=2)
+    bg = INPUT_ACTIVE if active else INPUT_BG
+    border = ACCENT if active else STROKE
+    rounded_rect(canvas, x, y, x + w, y + h, r=12, color=bg, thickness=-1)
+    rounded_rect(canvas, x, y, x + w, y + h, r=12, color=border, thickness=2)
+
+    display = value if value else placeholder
+    txt_col = TEXT if value else MUTED
+    ts = text_size(display, scale=0.54, thick=2)
+    ty = y + (h + ts[1]) // 2
+    draw_text(canvas, display, x + 12, ty, scale=0.54, color=txt_col, thick=2)
+
+    if active and int(time.time() * 2) % 2 == 0:
+        caret_x = min(x + w - 12, x + 12 + ts[0] + 2)
+        cv2.line(canvas, (caret_x, y + 10), (caret_x, y + h - 10), ACCENT_HI, 1)
+
+    if hint:
+        draw_text(canvas, hint, x, y + h + 18, scale=0.46, color=MUTED, thick=2)
+
+def pill(canvas, x, y, text, color, text_color=WHITE):
+    ts = text_size(text, scale=0.5, thick=2)
+    w = ts[0] + 18
+    h = 28
+    base = tint(color, 0.08)
+    rounded_rect(canvas, x, y, x + w, y + h, r=14, color=base, thickness=-1)
+    rounded_rect(canvas, x, y, x + w, y + h, r=14, color=shade(base, 0.2), thickness=2)
+    draw_text(canvas, text, x + 9, y + 20, scale=0.5, color=text_color, thick=2)
+    return x + w + 8
 
 # ============================================================
-# Canvas composition: place camera frame into fixed canvas
-# ============================================================
-def compose_canvas(frame_bgr: np.ndarray) -> Tuple[np.ndarray, float, int, int]:
-    """
-    Returns:
-    - canvas (CANVAS_H, CANVAS_W)
-    - scale from frame to canvas
-    - offx, offy where the resized frame is placed
-    """
-    canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
-    canvas[:] = BG
-
-    fh, fw = frame_bgr.shape[:2]
-    s = min((CANVAS_W - 40) / max(fw, 1), (CANVAS_H - 40) / max(fh, 1))
-    s = max(min(s, 1.0), 1e-6)
-    rw, rh = int(fw * s), int(fh * s)
-    resized = cv2.resize(frame_bgr, (rw, rh), interpolation=cv2.INTER_AREA)
-
-    offx = (CANVAS_W - rw) // 2
-    offy = (CANVAS_H - rh) // 2
-    canvas[offy:offy + rh, offx:offx + rw] = resized
-
-    return canvas, s, offx, offy
-
-
-# ============================================================
-# Main App
+# APP
 # ============================================================
 class PINCHApp:
     def __init__(self, yolo: YOLO, embedder: nn.Module):
+        self.win = "PINCH Live"
         self.yolo = yolo
         self.embedder = embedder
 
-        self.registry: Optional[Registry] = None
-        self.reg_path = os.path.join(RUN_DIR, "registry.json")
-
         self.running = True
-        self.screen = "main"  # main, enroll_setup, enroll_capture, trial_setup, trial_run, summary
+        self.screen = "main"  # main, live_enroll, live_trial_setup, live_trial_run, demo_menu, demo_enroll_setup, demo_enroll_run, demo_trial_setup, demo_trial_run
 
         self.mouse_x = 0
         self.mouse_y = 0
-        self.mouse_clicked = False
+        self.clicked = False
+        self.focus_field = ""
 
-        # Enrollment state
-        self.enroll_count = 1
-        self.enroll_names: List[str] = []
-        self.active_name_idx = 0
-        self.name_edit = ""   # keyboard typed
-        self.enroll_marker_idx = 0
+        # global video source (switch per mode)
+        self.source = VideoSource()
+        if not self.source.open_webcam(WEBCAM_INDEX):
+            raise RuntimeError("Failed to open webcam.")
+
+        # registry
+        self.registry: Optional[Registry] = None
+        self.reg_path = os.path.join(RUN_DIR, "registry.json")
+        self.load_registry()
+
+        # live enrollment (webcam only)
+        self.enroll_name = ""
+        self.enroll_name_edit = ""
         self.enroll_step_idx = 0
-        self.enroll_step_t0 = None
-        self.enroll_t0 = None
+        self.enroll_step_t0 = 0.0
+        self.enroll_t0 = 0.0
         self.enroll_embs: List[np.ndarray] = []
         self.enroll_frames = 0
         self.enroll_used = 0
 
-        # Trial state
+        # demo enrollment setup
+        self.demo_enroll_name = ""
+        self.demo_enroll_name_edit = ""
+        self.demo_enroll_video = ""
+        self.demo_enroll_video_edit = ""
+
+        # demo trial setup
+        self.demo_trial_video = ""
+        self.demo_trial_video_edit = ""
+        self.demo_trial_type = "swipe"
+        self.demo_condition_near = True
+        self.demo_condition_bright = True
+        self.demo_gt_enabled = False
+
+        # trial runtime
         self.trial_type = "swipe"
         self.condition_near = True
         self.condition_bright = True
         self.trial_duration = TRIAL_SWIPE_SEC
+
         self.trial_id = ""
-        self.trial_t0 = None
+        self.trial_t0 = 0.0
         self.frame_idx = 0
         self.states: Dict[int, TrackState] = {}
         self.active_prev = set()
 
-        # GT assignment
-        self.gt_enabled = True
         self.selected_track: Optional[int] = None
         self.gt_map: Dict[int, str] = {}
+        self.gt_enabled = True
 
-        # logs
         self.frame_cols, self.frame_rows = new_frame_logger()
         self.event_cols, self.event_rows = new_event_logger()
         self.lat_ms: List[float] = []
+        self._cm = None
+        self._gt_total = 0
+        self._gt_correct = 0
 
-        self.summary_data = None
-
-        cv2.namedWindow("PINCH Live", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("PINCH Live", CANVAS_W, CANVAS_H)
-        cv2.setMouseCallback("PINCH Live", self.on_mouse)
-
-        self.load_registry_if_any()
-
-    def load_registry_if_any(self):
-        if os.path.isfile(self.reg_path):
-            try:
-                with open(self.reg_path, "r", encoding="utf-8") as f:
-                    self.registry = Registry.from_json(json.load(f))
-                if len(self.registry.markers) == 0:
-                    self.registry = None
-            except:
-                self.registry = None
-
-    def save_registry(self):
-        ensure_dir(RUN_DIR)
-        with open(self.reg_path, "w", encoding="utf-8") as f:
-            json.dump(self.registry.to_json(), f, indent=2)
+        cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.win, CANVAS_W, CANVAS_H)
+        cv2.setMouseCallback(self.win, self.on_mouse)
 
     def on_mouse(self, event, x, y, flags, param):
         self.mouse_x = x
         self.mouse_y = y
         if event == cv2.EVENT_LBUTTONDOWN:
-            self.mouse_clicked = True
+            self.clicked = True
 
     def consume_click(self) -> bool:
-        if self.mouse_clicked:
-            self.mouse_clicked = False
+        if self.clicked:
+            self.clicked = False
             return True
         return False
+
+    def request_exit(self):
+        self.running = False
+
+    def load_registry(self):
+        self.registry = None
+        if os.path.isfile(self.reg_path):
+            try:
+                with open(self.reg_path, "r", encoding="utf-8") as f:
+                    r = Registry.from_json(json.load(f))
+                if len(r.markers) > 0:
+                    self.registry = r
+            except Exception:
+                self.registry = None
+
+    def save_registry(self):
+        ensure_dir(RUN_DIR)
+        if self.registry is None:
+            return
+        with open(self.reg_path, "w", encoding="utf-8") as f:
+            json.dump(self.registry.to_json(), f, indent=2)
 
     def condition_str(self) -> str:
         d = "near" if self.condition_near else "far"
         l = "bright" if self.condition_bright else "dim"
         return f"{d}/{l}"
 
-    def handle_keyboard_for_text(self, key):
-        # simple name typing (letters, digits, space, underscore, dash)
-        if key in (8, 127):  # backspace
-            self.name_edit = self.name_edit[:-1]
-            return
-        if key in (13, 10):  # enter
-            return
-        if 32 <= key <= 126 and len(self.name_edit) < 18:
-            self.name_edit += chr(key)
-
-    # ---------------- UI Screens ----------------
-
-    def draw_header(self, canvas, title, subtitle=""):
-        alpha_rect(canvas, 0, 0, CANVAS_W, 90, color=(0, 0, 0), alpha=0.55)
-        put_text(canvas, title, (28, 40), scale=1.00, thick=2, color=ACCENT)
+    def draw_topbar(self, canvas, title, subtitle=""):
+        alpha_rect(canvas, 0, 0, CANVAS_W, TOPBAR_H, (0, 0, 0), alpha=0.35)
+        cv2.line(canvas, (0, TOPBAR_H), (CANVAS_W, TOPBAR_H), STROKE, 1)
+        cv2.line(canvas, (18, 14), (18, TOPBAR_H - 14), ACCENT, 3)
+        draw_text(canvas, title, 34, 36, scale=0.92, color=ACCENT_HI, thick=2, font=FONT_TITLE)
         if subtitle:
-            put_text(canvas, subtitle, (28, 74), scale=0.55, thick=2, color=MUTED)
+            draw_text(canvas, subtitle, 34, 62, scale=0.5, color=MUTED, thick=2)
 
-    def main_screen(self, canvas):
-        self.draw_header(canvas, "PINCH Live", "Click to navigate. Enrollment builds prototypes. Trials log metrics for paper.")
-
-        # registry status
+        x = CANVAS_W - 430
+        x = pill(canvas, x, 22, self.source.describe(), CARD2)
         if self.registry is None:
-            msg = "Registry: not found. Please enroll markers."
-            col = WARN
+            pill(canvas, x, 22, "Registry: none", (70, 40, 40))
         else:
-            msg = "Registry: " + ", ".join(self.registry.names())
-            col = OK
-        put_text(canvas, msg, (28, 120), scale=0.62, thick=2, color=col)
+            pill(canvas, x, 22, f"Registry: {len(self.registry.markers)}", (30, 60, 30))
 
-        # buttons
+    def draw_sidebar_card(self, canvas, title, lines: List[str], y, h):
+        x1, y1, x2, y2 = 18, y, 18 + 324, y + h
+        shadow_card(canvas, x1, y1, x2, y2, r=16, shadow=8)
+        draw_text(canvas, title, x1 + 14, y1 + 28, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
+        yy = y1 + 54
+        for s in lines:
+            draw_text(canvas, s, x1 + 14, yy, scale=0.52, color=MUTED, thick=2)
+            yy += 22
+
+    def handle_text_input(self, key, buf: str, max_len=80) -> str:
+        if key in (8, 127):
+            return buf[:-1]
+        if key in (13, 10):
+            return buf
+        if key == 22:  # Ctrl+V
+            clip = sanitize_clipboard_text(get_clipboard_text())
+            if clip:
+                clip = clip[: max_len - len(buf)]
+                return buf + clip
+        if 32 <= key <= 126 and len(buf) < max_len:
+            return buf + chr(key)
+        return buf
+
+    # ---------------- Screens ----------------
+    def main_screen(self, canvas) -> None:
+        self.draw_topbar(canvas, "PINCHReader Live", "Live uses webcam. Demo uses video files.")
+
+        reg_line = "Registry not found. Run enrollment first." if self.registry is None else "Markers: " + ", ".join(self.registry.names())
+        self.draw_sidebar_card(canvas, "Status", [reg_line], y=92, h=90)
+
         btns = []
-        x = 440
-        y0 = 180
-        w = 400
-        h = 62
-        gap = 18
+        bx, by, bw, bh, gap = 28, 205, 300, 54, 12
 
         def add(text, tag, enabled=True):
-            b = Button(text=text, rect=(x, y0 + len(btns) * (h + gap), w, h), enabled=enabled, tag=tag)
-            b.hover = point_in_rect(self.mouse_x, self.mouse_y, b.rect)
+            b = Button(text=text, rect=(bx, by + len(btns) * (bh + gap), bw, bh), enabled=enabled, tag=tag)
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
             btns.append(b)
 
-        add("Enroll Markers", "enroll", enabled=True)
-        add("Swipe Trial", "trial_swipe", enabled=(self.registry is not None))
-        add("Interference Trial", "trial_interfere", enabled=(self.registry is not None))
-        add("Re-entry Trial", "trial_reentry", enabled=(self.registry is not None))
+        add("Live Enrollment", "live_enroll", enabled=True)
+        add("Live Trials", "live_trials", enabled=(self.registry is not None))
+        add("Demo Mode", "demo", enabled=True)
+        add("Reload registry", "reload", enabled=True)
         add("Exit", "exit", enabled=True)
 
         for b in btns:
-            draw_button(canvas, b)
+            primary = b.tag in ("live_enroll", "live_trials", "demo")
+            draw_button(canvas, b, primary=primary)
 
-        if self.consume_click():
+        clicked = self.consume_click()
+        if clicked:
             for b in btns:
                 if b.enabled and b.hover:
-                    if b.tag == "enroll":
-                        self.start_enroll_setup()
-                    elif b.tag == "trial_swipe":
-                        self.start_trial_setup("swipe")
-                    elif b.tag == "trial_interfere":
-                        self.start_trial_setup("interfere")
-                    elif b.tag == "trial_reentry":
-                        self.start_trial_setup("reentry")
+                    if b.tag == "live_enroll":
+                        self.start_live_enroll()
+                    elif b.tag == "live_trials":
+                        self.start_live_trial_setup()
+                    elif b.tag == "demo":
+                        self.screen = "demo_menu"
+                    elif b.tag == "reload":
+                        self.load_registry()
                     elif b.tag == "exit":
-                        self.running = False
+                        self.request_exit()
                     break
 
-    def start_enroll_setup(self):
-        self.screen = "enroll_setup"
-        self.enroll_count = 1
-        self.enroll_names = []
-        self.active_name_idx = 0
-        self.name_edit = ""
-
-    def enroll_setup_screen(self, canvas, key):
-        self.draw_header(canvas, "Enrollment Setup", "Pick how many markers, type names, then Start Enrollment.")
-
-        # count control
-        draw_rounded_rect(canvas, 60, 130, 420, 220, r=16, color=PANEL, thickness=-1)
-        put_text(canvas, "Markers to enroll", (84, 165), scale=0.62, color=TEXT)
-        put_text(canvas, f"{self.enroll_count}", (220, 205), scale=1.0, thick=3, color=ACCENT)
-
-        minus = Button("-", (90, 180, 60, 46), enabled=(self.enroll_count > 1), tag="minus")
-        plus = Button("+", (330, 180, 60, 46), enabled=(self.enroll_count < MAX_MARKERS), tag="plus")
-        for b in (minus, plus):
-            b.hover = point_in_rect(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b)
-
-        # name entries panel
-        draw_rounded_rect(canvas, 470, 130, 1220, 360, r=16, color=PANEL, thickness=-1)
-        put_text(canvas, "Marker Names", (494, 165), scale=0.62, color=TEXT)
-
-        # list rows
-        rows = []
-        for i in range(self.enroll_count):
-            yy = 190 + i * 42
-            r = (500, yy - 24, 660, 34)  # click to select
-            rows.append(r)
-            selected = (i == self.active_name_idx)
-            col = ACCENT2 if selected else (80, 80, 92)
-            draw_rounded_rect(canvas, r[0], r[1], r[0] + r[2], r[1] + r[3], r=12, color=col, thickness=-1)
-
-            name = self.enroll_names[i] if i < len(self.enroll_names) else ""
-            if selected:
-                shown = self.name_edit if self.name_edit != "" else name
-                put_text(canvas, f"Marker {i+1}: {shown}", (520, yy), scale=0.58, color=TEXT)
-                put_text(canvas, "Type, then press Enter", (920, yy), scale=0.48, color=MUTED)
-            else:
-                shown = name if name else f"(click to name)"
-                put_text(canvas, f"Marker {i+1}: {shown}", (520, yy), scale=0.58, color=TEXT)
-
-        # bottom controls
-        back = Button("Back", (60, 640, 180, 56), tag="back")
-        start = Button("Start Enrollment", (980, 640, 240, 56), tag="start", enabled=True)
-        for b in (back, start):
-            b.hover = point_in_rect(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b)
-
-        # handle keyboard for active name
-        if key != -1:
-            if key in (13, 10):  # Enter commits name
-                nm = self.name_edit.strip()
-                if nm == "":
-                    nm = f"marker{self.active_name_idx+1}"
-                while len(self.enroll_names) < self.enroll_count:
-                    self.enroll_names.append("")
-                self.enroll_names[self.active_name_idx] = nm
-                self.name_edit = ""
-            else:
-                self.handle_keyboard_for_text(key)
-
-        # click actions
-        if self.consume_click():
-            if minus.enabled and minus.hover:
-                self.enroll_count -= 1
-                self.active_name_idx = min(self.active_name_idx, self.enroll_count - 1)
-            elif plus.enabled and plus.hover:
-                self.enroll_count += 1
-            elif back.hover:
-                self.screen = "main"
-            elif start.hover:
-                # fill missing names
-                while len(self.enroll_names) < self.enroll_count:
-                    self.enroll_names.append(f"marker{len(self.enroll_names)+1}")
-                for i in range(self.enroll_count):
-                    if self.enroll_names[i].strip() == "":
-                        self.enroll_names[i] = f"marker{i+1}"
-                self.start_enroll_capture()
-            else:
-                # selecting name row
-                for i, r in enumerate(rows):
-                    rx, ry, rw, rh = r
-                    if point_in_rect(self.mouse_x, self.mouse_y, (rx, ry, rw, rh)):
-                        self.active_name_idx = i
-                        self.name_edit = ""
-                        break
-
-    def start_enroll_capture(self):
-        self.screen = "enroll_capture"
-        self.enroll_marker_idx = 0
+    # ---------------- LIVE ENROLLMENT (webcam) ----------------
+    def start_live_enroll(self):
+        self.screen = "live_enroll"
+        self.focus_field = "live_enroll_name"
+        self.enroll_name = ""
+        self.enroll_name_edit = ""
         self.enroll_step_idx = 0
         self.enroll_step_t0 = time.time()
         self.enroll_t0 = time.time()
         self.enroll_embs = []
         self.enroll_frames = 0
         self.enroll_used = 0
-        self.registry = Registry()
+        # force webcam
+        self.source.open_webcam(self.source.webcam_index)
 
-    def enroll_capture_screen(self, frame_bgr, canvas, s, offx, offy):
-        name = self.enroll_names[self.enroll_marker_idx]
+    def live_enroll_screen(self, frame_bgr, canvas, s, offx, offy, key):
+        self.draw_topbar(canvas, "Live Enrollment", "Name the marker, press Enter, then follow the prompts.")
+
+        # name card
+        shadow_card(canvas, 18, 92, 18 + 324, 92 + 150, r=16, shadow=8)
+        name_value = self.enroll_name_edit if self.enroll_name == "" else self.enroll_name
+        name_rect = (34, 140, 300, 46)
+        draw_input(
+            canvas,
+            name_rect,
+            "Marker name",
+            name_value,
+            placeholder="Type a name and press Enter",
+            active=(self.focus_field == "live_enroll_name" and self.enroll_name == ""),
+            hint="Enter locks the name for this run.",
+        )
+
+        # handle typing until name confirmed
+        if self.enroll_name == "" and key != -1 and self.focus_field == "live_enroll_name":
+            if key in (13, 10):
+                nm = self.enroll_name_edit.strip()
+                self.enroll_name = nm if nm else f"marker_{now_ms()}"
+                self.enroll_name_edit = ""
+                self.enroll_step_idx = 0
+                self.enroll_step_t0 = time.time()
+                self.enroll_t0 = time.time()
+                self.enroll_embs = []
+                self.enroll_frames = 0
+                self.enroll_used = 0
+            else:
+                self.enroll_name_edit = self.handle_text_input(key, self.enroll_name_edit, max_len=24)
+
+        # cancel button
+        cancel = Button("Cancel", (28, CANVAS_H - 72, 300, 52), tag="cancel")
+        cancel.hover = point_in(self.mouse_x, self.mouse_y, cancel.rect)
+        draw_button(canvas, cancel, primary=False)
+
+        clicked = self.consume_click()
+        if clicked:
+            if point_in(self.mouse_x, self.mouse_y, name_rect) and self.enroll_name == "":
+                self.focus_field = "live_enroll_name"
+            elif cancel.hover:
+                self.screen = "main"
+                return
+
+        if self.enroll_name == "":
+            return
+
+        # steps
         step_text, step_dur = ENROLL_STEPS[self.enroll_step_idx]
         elapsed_step = time.time() - self.enroll_step_t0
 
-        # detect best box (on original frame)
         self.enroll_frames += 1
         H, W = frame_bgr.shape[:2]
         res = self.yolo.predict(frame_bgr, conf=DET_CONF, iou=DET_IOU, verbose=False)
@@ -726,12 +1046,14 @@ class PINCHApp:
             boxes = res[0].boxes.data.cpu().numpy()
             boxes = boxes[np.argsort(-boxes[:, 4])]
             x1, y1, x2, y2, conf, cls = boxes[0].tolist()
+
             bw = x2 - x1
             bh = y2 - y1
             x1p = x1 - BOX_PAD_FRAC * bw
             y1p = y1 - BOX_PAD_FRAC * bh
             x2p = x2 + BOX_PAD_FRAC * bw
             y2p = y2 + BOX_PAD_FRAC * bh
+
             b = clamp_box(x1p, y1p, x2p, y2p, W, H)
             if b is not None:
                 x1i, y1i, x2i, y2i = b
@@ -748,54 +1070,54 @@ class PINCHApp:
                 self.enroll_embs.append(z[0])
                 self.enroll_used += 1
 
-        # step advance
         if elapsed_step >= step_dur:
             self.enroll_step_idx += 1
             self.enroll_step_t0 = time.time()
 
             if self.enroll_step_idx >= len(ENROLL_STEPS):
-                # finalize this marker
                 embs = np.array(self.enroll_embs, dtype=np.float32)
-                prof = build_profile_from_enrollment(name, embs)
-                prof.enroll_frames = int(self.enroll_frames)
-                prof.enroll_used = int(self.enroll_used)
+                protos, thr = build_profile_from_enrollment(self.enroll_name, embs)
+                prof = MarkerProfile(
+                    marker_id=self.enroll_name,
+                    proto=protos,
+                    thr=thr,
+                    enroll_frames=int(self.enroll_frames),
+                    enroll_used=int(self.enroll_used),
+                    source_mode="webcam",
+                    source_path="",
+                )
+                if self.registry is None:
+                    self.registry = Registry()
                 self.registry.add_marker(prof)
-
-                # next marker or finish
-                self.enroll_marker_idx += 1
-                if self.enroll_marker_idx >= len(self.enroll_names):
-                    self.save_registry()
-                    self.screen = "main"
-                    return
-                # reset for next marker
-                self.enroll_step_idx = 0
-                self.enroll_step_t0 = time.time()
-                self.enroll_t0 = time.time()
-                self.enroll_embs = []
-                self.enroll_frames = 0
-                self.enroll_used = 0
+                self.save_registry()
+                self.screen = "main"
                 return
 
-        # draw overlay
-        self.draw_header(canvas, "Enrollment", f"Marker {self.enroll_marker_idx+1}/{len(self.enroll_names)}: {name}")
-
-        # draw step card
-        draw_rounded_rect(canvas, 40, 100, 520, 240, r=16, color=PANEL, thickness=-1)
-        put_text(canvas, "Instruction", (64, 138), scale=0.62, color=TEXT)
-        put_text(canvas, step_text, (64, 178), scale=0.80, thick=2, color=ACCENT2)
-        put_text(canvas, f"Used embeddings: {self.enroll_used}", (64, 216), scale=0.55, color=MUTED)
+        # step card
+        self.draw_sidebar_card(
+            canvas,
+            "Enrollment",
+            [
+                f"Name: {self.enroll_name}",
+                f"Step: {step_text}",
+                f"Embeddings used: {self.enroll_used}",
+            ],
+            y=235,
+            h=150,
+        )
 
         # progress bar
         total = sum(d for _, d in ENROLL_STEPS)
         elapsed_total = time.time() - self.enroll_t0
         prog = min(1.0, elapsed_total / max(total, 1e-6))
-        bar_x1, bar_y1, bar_x2, bar_y2 = 40, 260, 520, 286
-        draw_rounded_rect(canvas, bar_x1, bar_y1, bar_x2, bar_y2, r=10, color=(70, 70, 78), thickness=-1)
-        fill = int((bar_x2 - bar_x1) * prog)
-        draw_rounded_rect(canvas, bar_x1, bar_y1, bar_x1 + fill, bar_y2, r=10, color=ACCENT, thickness=-1)
-        put_text(canvas, f"{int(elapsed_total)}/{int(total)}s", (410, 254), scale=0.50, color=TEXT)
+        x1, y1, x2, y2 = 28, 395, 28 + 300, 417
+        rounded_rect(canvas, x1, y1, x2, y2, r=12, color=CARD2, thickness=-1)
+        fill = int((x2 - x1) * prog)
+        if fill > 0:
+            rounded_rect(canvas, x1, y1, x1 + fill, y2, r=12, color=ACCENT, thickness=-1)
+        draw_text(canvas, f"{int(elapsed_total)}/{int(total)}s", 28 + 210, 389, scale=0.50, color=TEXT, thick=2)
 
-        # draw box on canvas if present
+        # draw box
         if best_box is not None:
             x1i, y1i, x2i, y2i = best_box
             cx1 = int(offx + x1i * s)
@@ -804,58 +1126,78 @@ class PINCHApp:
             cy2 = int(offy + y2i * s)
             cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), OK, 2)
 
-        # back button
-        back = Button("Cancel", (40, 640, 180, 56), tag="cancel")
-        back.hover = point_in_rect(self.mouse_x, self.mouse_y, back.rect)
-        draw_button(canvas, back)
+    # ---------------- LIVE TRIALS (webcam) ----------------
+    def start_live_trial_setup(self):
+        self.screen = "live_trial_setup"
+        self.trial_type = "swipe"
+        self.condition_near = True
+        self.condition_bright = True
+        self.gt_enabled = True
+        # force webcam
+        self.source.open_webcam(self.source.webcam_index)
 
-        if self.consume_click() and back.hover:
-            # abandon enrollment
-            self.load_registry_if_any()
-            self.screen = "main"
+    def live_trial_setup_screen(self, canvas):
+        self.draw_topbar(canvas, "Live Trials", "Choose type and condition, then start the live run.")
 
-    # ---------------- Trial setup + run ----------------
+        if self.registry is None:
+            self.draw_sidebar_card(canvas, "Error", ["No registry loaded.", "Run enrollment first."], y=92, h=90)
+            back = Button("Back", (28, CANVAS_H - 72, 300, 52), tag="back")
+            back.hover = point_in(self.mouse_x, self.mouse_y, back.rect)
+            draw_button(canvas, back, primary=False)
+            if self.consume_click() and back.hover:
+                self.screen = "main"
+            return
 
-    def start_trial_setup(self, trial_type: str):
-        self.screen = "trial_setup"
-        self.trial_type = trial_type
-        if trial_type == "swipe":
-            self.trial_duration = TRIAL_SWIPE_SEC
-        elif trial_type == "interfere":
-            self.trial_duration = TRIAL_INTERFERE_SEC
-        else:
-            self.trial_duration = TRIAL_REENTRY_SEC
+        shadow_card(canvas, 18, 92, 18 + 324, 92 + 290, r=16, shadow=8)
+        draw_text(canvas, "Trial type", 34, 126, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
 
-    def trial_setup_screen(self, canvas):
-        self.draw_header(canvas, "Trial Setup", "Choose condition, then Start. Assign GT by clicking a box then clicking a marker button.")
+        t_swipe = Button("Swipe", (34, 148, 300, 48), tag="t_swipe")
+        t_int = Button("Interference", (34, 206, 300, 48), tag="t_int")
+        t_re = Button("Re-entry", (34, 264, 300, 48), tag="t_re")
 
-        draw_rounded_rect(canvas, 60, 120, 600, 320, r=16, color=PANEL, thickness=-1)
-        put_text(canvas, f"Trial: {self.trial_type}", (88, 165), scale=0.80, color=ACCENT2)
-        put_text(canvas, f"Duration: {self.trial_duration}s", (88, 210), scale=0.62, color=TEXT)
+        t_swipe.toggled = (self.trial_type == "swipe")
+        t_int.toggled = (self.trial_type == "interfere")
+        t_re.toggled = (self.trial_type == "reentry")
 
-        # toggles
-        near_btn = Button("Near", (90, 250, 200, 56), tag="near")
-        far_btn = Button("Far", (320, 250, 200, 56), tag="far")
+        for b in (t_swipe, t_int, t_re):
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=True)
+
+        draw_text(canvas, "Condition", 34, 332, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
+        near_btn = Button("Near", (34, 354, 140, 48), tag="near")
+        far_btn = Button("Far", (194, 354, 140, 48), tag="far")
+        bright_btn = Button("Bright", (34, 412, 140, 48), tag="bright")
+        dim_btn = Button("Dim", (194, 412, 140, 48), tag="dim")
+
         near_btn.toggled = self.condition_near
         far_btn.toggled = not self.condition_near
-
-        bright_btn = Button("Bright", (90, 320, 200, 56), tag="bright")
-        dim_btn = Button("Dim", (320, 320, 200, 56), tag="dim")
         bright_btn.toggled = self.condition_bright
         dim_btn.toggled = not self.condition_bright
 
         for b in (near_btn, far_btn, bright_btn, dim_btn):
-            b.hover = point_in_rect(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b)
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=True)
 
-        start = Button("Start Trial", (980, 640, 240, 56), tag="start")
-        back = Button("Back", (60, 640, 180, 56), tag="back")
+        gt_btn = Button("GT ON" if self.gt_enabled else "GT OFF", (34, 474, 300, 48), tag="gt")
+        gt_btn.toggled = self.gt_enabled
+        gt_btn.hover = point_in(self.mouse_x, self.mouse_y, gt_btn.rect)
+        draw_button(canvas, gt_btn, primary=True)
+
+        back = Button("Back", (28, CANVAS_H - 72, 140, 52), tag="back")
+        start = Button("Start", (188, CANVAS_H - 72, 140, 52), tag="start")
         for b in (back, start):
-            b.hover = point_in_rect(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b)
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=(b.tag == "start"))
 
-        if self.consume_click():
-            if near_btn.hover:
+        clicked = self.consume_click()
+        if clicked:
+            if t_swipe.hover:
+                self.trial_type = "swipe"
+            elif t_int.hover:
+                self.trial_type = "interfere"
+            elif t_re.hover:
+                self.trial_type = "reentry"
+            elif near_btn.hover:
                 self.condition_near = True
             elif far_btn.hover:
                 self.condition_near = False
@@ -863,13 +1205,439 @@ class PINCHApp:
                 self.condition_bright = True
             elif dim_btn.hover:
                 self.condition_bright = False
+            elif gt_btn.hover:
+                self.gt_enabled = not self.gt_enabled
             elif back.hover:
                 self.screen = "main"
             elif start.hover:
-                self.start_trial_run()
+                self.start_trial_run(mode="live")
 
-    def start_trial_run(self):
-        self.screen = "trial_run"
+    # ---------------- DEMO MENU ----------------
+    def demo_menu_screen(self, canvas):
+        self.draw_topbar(canvas, "Demo Mode", "Use video files for enrollment and trials. Paste a path or browse.")
+
+        self.draw_sidebar_card(canvas, "Demo", ["Enrollment: build prototypes from a video", "Trials: run routing on a video"], y=92, h=90)
+
+        btns = []
+        bx, by, bw, bh, gap = 28, 205, 300, 54, 12
+
+        def add(text, tag, enabled=True):
+            b = Button(text=text, rect=(bx, by + len(btns) * (bh + gap), bw, bh), enabled=enabled, tag=tag)
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            btns.append(b)
+
+        add("Demo Enrollment (Video)", "demo_enroll", enabled=True)
+        add("Demo Trials (Video)", "demo_trials", enabled=True)
+        add("Back", "back", enabled=True)
+
+        for b in btns:
+            draw_button(canvas, b, primary=(b.tag != "back"))
+
+        clicked = self.consume_click()
+        if clicked:
+            for b in btns:
+                if b.enabled and b.hover:
+                    if b.tag == "demo_enroll":
+                        self.start_demo_enroll_setup()
+                    elif b.tag == "demo_trials":
+                        self.start_demo_trial_setup()
+                    elif b.tag == "back":
+                        self.screen = "main"
+                    break
+
+    # ---------------- DEMO ENROLLMENT ----------------
+    def start_demo_enroll_setup(self):
+        self.screen = "demo_enroll_setup"
+        self.focus_field = "demo_enroll_name"
+        self.demo_enroll_name = ""
+        self.demo_enroll_name_edit = ""
+        self.demo_enroll_video = ""
+        self.demo_enroll_video_edit = ""
+
+    def demo_enroll_setup_screen(self, canvas, key):
+        self.draw_topbar(canvas, "Demo Enrollment", "1) Name the marker. 2) Pick or paste a video. 3) Start.")
+
+        shadow_card(canvas, 18, 92, 18 + 324, 92 + 290, r=16, shadow=8)
+        name_rect = (34, 140, 300, 46)
+        video_rect = (34, 216, 300, 46)
+
+        name_value = self.demo_enroll_name_edit if self.demo_enroll_name == "" else self.demo_enroll_name
+        draw_input(
+            canvas,
+            name_rect,
+            "Marker name",
+            name_value,
+            placeholder="Type a name and press Enter",
+            active=(self.focus_field == "demo_enroll_name"),
+        )
+
+        vraw = self.demo_enroll_video_edit if self.demo_enroll_video_edit else self.demo_enroll_video
+        vshown = truncate_path(vraw)
+        draw_input(
+            canvas,
+            video_rect,
+            "Enrollment video",
+            vshown,
+            placeholder="Browse or paste a file path",
+            active=(self.focus_field == "demo_enroll_video"),
+        )
+
+        pick = Button("Browse", (34, 274, 180, 46), tag="pick", enabled=True)
+        paste = Button("Paste", (34 + 190, 274, 110, 46), tag="paste", enabled=True)
+        for b in (pick, paste):
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=True)
+
+        start = Button("Start demo enrollment", (34, 330, 300, 48), tag="start",
+                       enabled=bool(self.demo_enroll_name) and os.path.isfile(self.demo_enroll_video))
+        start.hover = point_in(self.mouse_x, self.mouse_y, start.rect)
+        draw_button(canvas, start, primary=True)
+
+        back = Button("Back", (34, CANVAS_H - 72, 300, 52), tag="back")
+        back.hover = point_in(self.mouse_x, self.mouse_y, back.rect)
+        draw_button(canvas, back, primary=False)
+
+        if key != -1:
+            if self.focus_field == "demo_enroll_name":
+                if key in (13, 10):
+                    nm = self.demo_enroll_name_edit.strip()
+                    self.demo_enroll_name = nm if nm else f"marker_{now_ms()}"
+                    self.demo_enroll_name_edit = ""
+                    self.focus_field = "demo_enroll_video"
+                else:
+                    self.demo_enroll_name_edit = self.handle_text_input(key, self.demo_enroll_name_edit, max_len=24)
+            elif self.focus_field == "demo_enroll_video":
+                if key not in (13, 10):
+                    self.demo_enroll_video_edit = self.handle_text_input(key, self.demo_enroll_video_edit, max_len=220)
+                    candidate = normalize_path(self.demo_enroll_video_edit)
+                    if os.path.isfile(candidate):
+                        candidate = os.path.abspath(candidate)
+                        self.demo_enroll_video = candidate
+                        self.demo_enroll_video_edit = candidate
+
+        clicked = self.consume_click()
+        if clicked:
+            if point_in(self.mouse_x, self.mouse_y, name_rect):
+                if self.demo_enroll_name:
+                    self.demo_enroll_name_edit = self.demo_enroll_name
+                    self.demo_enroll_name = ""
+                self.focus_field = "demo_enroll_name"
+            elif point_in(self.mouse_x, self.mouse_y, video_rect):
+                self.focus_field = "demo_enroll_video"
+            elif pick.hover:
+                chosen = pick_video_file_windows(title="Select enrollment video")
+                chosen = normalize_path(chosen)
+                if chosen and os.path.isfile(chosen):
+                    chosen = os.path.abspath(chosen)
+                    self.demo_enroll_video = chosen
+                    self.demo_enroll_video_edit = chosen
+            elif paste.hover:
+                clip = normalize_path(sanitize_clipboard_text(get_clipboard_text()))
+                if clip:
+                    self.demo_enroll_video_edit = clip
+                    if os.path.isfile(clip):
+                        clip = os.path.abspath(clip)
+                        self.demo_enroll_video = clip
+                        self.demo_enroll_video_edit = clip
+            elif start.enabled and start.hover:
+                self.start_demo_enroll_run()
+            elif back.hover:
+                self.screen = "demo_menu"
+
+    def start_demo_enroll_run(self):
+        # open video for demo enrollment
+        self.source.open_video(self.demo_enroll_video, loop=True)
+        self.screen = "demo_enroll_run"
+        self.enroll_name = self.demo_enroll_name
+        self.enroll_step_idx = 0
+        self.enroll_step_t0 = time.time()
+        self.enroll_t0 = time.time()
+        self.enroll_embs = []
+        self.enroll_frames = 0
+        self.enroll_used = 0
+
+    def demo_enroll_run_screen(self, frame_bgr, canvas, s, offx, offy):
+        self.draw_topbar(canvas, "Demo Enrollment Running", "Enrollment is running on your video. Cancel to stop.")
+
+        # reuse the same enrollment capture as live, with source_mode/video info
+        step_text, step_dur = ENROLL_STEPS[self.enroll_step_idx]
+        elapsed_step = time.time() - self.enroll_step_t0
+
+        self.enroll_frames += 1
+        H, W = frame_bgr.shape[:2]
+        res = self.yolo.predict(frame_bgr, conf=DET_CONF, iou=DET_IOU, verbose=False)
+
+        best_crop_rgb = None
+        best_box = None
+
+        if res and res[0].boxes is not None and len(res[0].boxes) > 0:
+            boxes = res[0].boxes.data.cpu().numpy()
+            boxes = boxes[np.argsort(-boxes[:, 4])]
+            x1, y1, x2, y2, conf, cls = boxes[0].tolist()
+
+            bw = x2 - x1
+            bh = y2 - y1
+            x1p = x1 - BOX_PAD_FRAC * bw
+            y1p = y1 - BOX_PAD_FRAC * bh
+            x2p = x2 + BOX_PAD_FRAC * bw
+            y2p = y2 + BOX_PAD_FRAC * bh
+
+            b = clamp_box(x1p, y1p, x2p, y2p, W, H)
+            if b is not None:
+                x1i, y1i, x2i, y2i = b
+                area = (x2i - x1i) * (y2i - y1i)
+                if area >= MIN_BOX_AREA:
+                    crop = frame_bgr[y1i:y2i, x1i:x2i]
+                    if crop.size > 0 and lap_var(crop) >= BLUR_THRES:
+                        best_crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                        best_box = (x1i, y1i, x2i, y2i)
+
+        if best_crop_rgb is not None:
+            z = embed_crops(self.embedder, [best_crop_rgb], DEVICE)
+            if z.shape[0] == 1:
+                self.enroll_embs.append(z[0])
+                self.enroll_used += 1
+
+        if elapsed_step >= step_dur:
+            self.enroll_step_idx += 1
+            self.enroll_step_t0 = time.time()
+
+            if self.enroll_step_idx >= len(ENROLL_STEPS):
+                embs = np.array(self.enroll_embs, dtype=np.float32)
+                protos, thr = build_profile_from_enrollment(self.enroll_name, embs)
+                prof = MarkerProfile(
+                    marker_id=self.enroll_name,
+                    proto=protos,
+                    thr=thr,
+                    enroll_frames=int(self.enroll_frames),
+                    enroll_used=int(self.enroll_used),
+                    source_mode="video",
+                    source_path=self.demo_enroll_video,
+                )
+                if self.registry is None:
+                    self.registry = Registry()
+                self.registry.add_marker(prof)
+                self.save_registry()
+
+                # go back to demo menu and reopen webcam so UI feels "live"
+                self.source.open_webcam(self.source.webcam_index)
+                self.screen = "demo_menu"
+                return
+
+        self.draw_sidebar_card(
+            canvas,
+            "Demo Enrollment",
+            [
+                f"Name: {self.enroll_name}",
+                f"Step: {step_text}",
+                f"Embeddings used: {self.enroll_used}",
+            ],
+            y=92,
+            h=150,
+        )
+
+        # progress bar
+        total = sum(d for _, d in ENROLL_STEPS)
+        elapsed_total = time.time() - self.enroll_t0
+        prog = min(1.0, elapsed_total / max(total, 1e-6))
+        x1, y1, x2, y2 = 28, 260, 28 + 300, 282
+        rounded_rect(canvas, x1, y1, x2, y2, r=12, color=CARD2, thickness=-1)
+        fill = int((x2 - x1) * prog)
+        if fill > 0:
+            rounded_rect(canvas, x1, y1, x1 + fill, y2, r=12, color=ACCENT, thickness=-1)
+        draw_text(canvas, f"{int(elapsed_total)}/{int(total)}s", 28 + 210, 254, scale=0.50, color=TEXT, thick=2)
+
+        if best_box is not None:
+            x1i, y1i, x2i, y2i = best_box
+            cx1 = int(offx + x1i * s)
+            cy1 = int(offy + y1i * s)
+            cx2 = int(offx + x2i * s)
+            cy2 = int(offy + y2i * s)
+            cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), OK, 2)
+
+        cancel = Button("Cancel", (28, CANVAS_H - 72, 300, 52), tag="cancel")
+        cancel.hover = point_in(self.mouse_x, self.mouse_y, cancel.rect)
+        draw_button(canvas, cancel, primary=False)
+
+        if self.consume_click() and cancel.hover:
+            self.source.open_webcam(self.source.webcam_index)
+            self.screen = "demo_menu"
+
+    # ---------------- DEMO TRIALS ----------------
+    def start_demo_trial_setup(self):
+        self.screen = "demo_trial_setup"
+        self.focus_field = "demo_trial_video"
+        self.demo_trial_video = ""
+        self.demo_trial_video_edit = ""
+        self.demo_trial_type = "swipe"
+        self.demo_condition_near = True
+        self.demo_condition_bright = True
+        self.demo_gt_enabled = False
+
+    def demo_trial_setup_screen(self, canvas, key):
+        self.draw_topbar(canvas, "Demo Trials", "Pick a registry (optional), choose a video, then start the trial.")
+
+        if self.registry is None:
+            self.draw_sidebar_card(canvas, "Registry", ["No registry loaded.", "Load registry.json or run enrollment."], y=92, h=90)
+        else:
+            self.draw_sidebar_card(canvas, "Registry", ["Markers: " + ", ".join(self.registry.names())], y=92, h=90)
+
+        # left controls
+        shadow_card(canvas, 18, 205, 18 + 324, 205 + 360, r=16, shadow=8)
+        draw_text(canvas, "Trial type", 34, 238, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
+
+        t_swipe = Button("Swipe", (34, 262, 300, 46), tag="t_swipe")
+        t_int = Button("Interference", (34, 318, 300, 46), tag="t_int")
+        t_re = Button("Re-entry", (34, 374, 300, 46), tag="t_re")
+
+        t_swipe.toggled = (self.demo_trial_type == "swipe")
+        t_int.toggled = (self.demo_trial_type == "interfere")
+        t_re.toggled = (self.demo_trial_type == "reentry")
+
+        for b in (t_swipe, t_int, t_re):
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=True)
+
+        draw_text(canvas, "Condition", 34, 438, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
+        near_btn = Button("Near", (34, 460, 140, 46), tag="near")
+        far_btn = Button("Far", (194, 460, 140, 46), tag="far")
+        bright_btn = Button("Bright", (34, 516, 140, 46), tag="bright")
+        dim_btn = Button("Dim", (194, 516, 140, 46), tag="dim")
+
+        near_btn.toggled = self.demo_condition_near
+        far_btn.toggled = not self.demo_condition_near
+        bright_btn.toggled = self.demo_condition_bright
+        dim_btn.toggled = not self.demo_condition_bright
+
+        for b in (near_btn, far_btn, bright_btn, dim_btn):
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=True)
+
+        # right: file selection
+        shadow_card(canvas, 360, 92, CANVAS_W - 18, 92 + 250, r=18, shadow=10)
+        draw_text(canvas, "Trial video", 382, 126, scale=0.62, color=ACCENT_HI, thick=2, font=FONT_TITLE)
+        draw_text(canvas, "Pick a file or paste a path, then start the trial.", 382, 150, scale=0.5, color=MUTED, thick=2)
+
+        vraw = self.demo_trial_video_edit if self.demo_trial_video_edit else self.demo_trial_video
+        vshown = truncate_path(vraw)
+        video_rect = (382, 170, CANVAS_W - 18 - 382 - 20, 46)
+        draw_input(
+            canvas,
+            video_rect,
+            "Video path",
+            vshown,
+            placeholder="Browse or paste a file path",
+            active=(self.focus_field == "demo_trial_video"),
+        )
+
+        btn_x = 382
+        btn_y = 230
+        btn_w = 185
+        gap = 10
+        pickv = Button("Browse", (btn_x, btn_y, btn_w, 46), tag="pickv")
+        paste = Button("Paste", (btn_x + (btn_w + gap) * 1, btn_y, btn_w, 46), tag="paste")
+        loadreg = Button("Pick registry", (btn_x + (btn_w + gap) * 2, btn_y, btn_w, 46), tag="pickr")
+        reload_btn = Button("Reload registry", (btn_x + (btn_w + gap) * 3, btn_y, btn_w, 46), tag="reload")
+
+        for b in (pickv, paste, loadreg, reload_btn):
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=True)
+
+        if key != -1 and self.focus_field == "demo_trial_video" and key not in (13, 10):
+            self.demo_trial_video_edit = self.handle_text_input(key, self.demo_trial_video_edit, max_len=240)
+            candidate = normalize_path(self.demo_trial_video_edit)
+            if os.path.isfile(candidate):
+                candidate = os.path.abspath(candidate)
+                self.demo_trial_video = candidate
+                self.demo_trial_video_edit = candidate
+
+        # bottom
+        back = Button("Back", (28, CANVAS_H - 72, 180, 52), tag="back")
+        start = Button("Start demo trial", (CANVAS_W - 18 - 260, CANVAS_H - 72, 260, 52), tag="start",
+                       enabled=(self.registry is not None) and os.path.isfile(self.demo_trial_video))
+        for b in (back, start):
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button(canvas, b, primary=(b.tag == "start"))
+
+        clicked = self.consume_click()
+        if clicked:
+            if t_swipe.hover:
+                self.demo_trial_type = "swipe"
+            elif t_int.hover:
+                self.demo_trial_type = "interfere"
+            elif t_re.hover:
+                self.demo_trial_type = "reentry"
+            elif near_btn.hover:
+                self.demo_condition_near = True
+            elif far_btn.hover:
+                self.demo_condition_near = False
+            elif bright_btn.hover:
+                self.demo_condition_bright = True
+            elif dim_btn.hover:
+                self.demo_condition_bright = False
+            elif point_in(self.mouse_x, self.mouse_y, video_rect):
+                self.focus_field = "demo_trial_video"
+            elif pickv.hover:
+                chosen = pick_video_file_windows(title="Select trial video")
+                chosen = normalize_path(chosen)
+                if chosen and os.path.isfile(chosen):
+                    chosen = os.path.abspath(chosen)
+                    self.demo_trial_video = chosen
+                    self.demo_trial_video_edit = chosen
+            elif paste.hover:
+                clip = normalize_path(sanitize_clipboard_text(get_clipboard_text()))
+                if clip:
+                    self.demo_trial_video_edit = clip
+                    if os.path.isfile(clip):
+                        clip = os.path.abspath(clip)
+                        self.demo_trial_video = clip
+                        self.demo_trial_video_edit = clip
+            elif loadreg.hover:
+                chosen = pick_registry_file_windows(title="Select registry.json")
+                chosen = normalize_path(chosen)
+                if chosen and os.path.isfile(chosen):
+                    try:
+                        with open(chosen, "r", encoding="utf-8") as f:
+                            r = Registry.from_json(json.load(f))
+                        if len(r.markers) > 0:
+                            self.registry = r
+                            # also write into default reg_path for consistency
+                            self.save_registry()
+                    except Exception:
+                        pass
+            elif reload_btn.hover:
+                self.load_registry()
+            elif back.hover:
+                self.screen = "demo_menu"
+            elif start.enabled and start.hover:
+                self.start_trial_run(mode="demo")
+
+    # ---------------- TRIAL RUN (shared) ----------------
+    def start_trial_run(self, mode: str):
+        assert self.registry is not None
+
+        # set parameters based on mode
+        if mode == "live":
+            self.trial_type = self.trial_type
+            self.condition_near = self.condition_near
+            self.condition_bright = self.condition_bright
+            self.gt_enabled = self.gt_enabled
+            self.source.open_webcam(self.source.webcam_index)
+        else:
+            self.trial_type = self.demo_trial_type
+            self.condition_near = self.demo_condition_near
+            self.condition_bright = self.demo_condition_bright
+            self.gt_enabled = False  # keep demo simple unless you want GT UI too
+            self.source.open_video(self.demo_trial_video, loop=True)
+
+        if self.trial_type == "swipe":
+            self.trial_duration = TRIAL_SWIPE_SEC
+        elif self.trial_type == "interfere":
+            self.trial_duration = TRIAL_INTERFERE_SEC
+        else:
+            self.trial_duration = TRIAL_REENTRY_SEC
+
+        self.screen = "live_trial_run" if mode == "live" else "demo_trial_run"
         self.trial_t0 = time.time()
         self.trial_id = f"{now_ms()}_{self.trial_type}"
         self.frame_idx = 0
@@ -877,233 +1645,24 @@ class PINCHApp:
         self.active_prev = set()
         self.selected_track = None
         self.gt_map = {}
+
         self.frame_cols, self.frame_rows = new_frame_logger()
         self.event_cols, self.event_rows = new_event_logger()
         self.lat_ms = []
 
-    def trial_run_screen(self, frame_bgr, canvas, s, offx, offy):
-        assert self.registry is not None
+        self._cm = np.zeros((len(self.registry.names()), len(self.registry.names())), dtype=np.int32)
+        self._gt_total = 0
+        self._gt_correct = 0
 
-        t_frame0 = time.time()
-        self.frame_idx += 1
-
-        # YOLO + ByteTrack
-        t_det0 = time.time()
-        r = self.yolo.track(
-            frame_bgr,
-            tracker=TRACKER_YAML,
-            persist=True,
-            conf=DET_CONF,
-            iou=DET_IOU,
-            verbose=False
-        )[0]
-        det_track_ms = (time.time() - t_det0) * 1000.0
-
-        boxes = r.boxes
-        det_meta = []  # (tid, (x1,y1,x2,y2), conf)
-        crops_rgb = []
-
-        H, W = frame_bgr.shape[:2]
-        if boxes is not None and len(boxes) > 0:
-            xyxy = boxes.xyxy.cpu().numpy()
-            confs = boxes.conf.cpu().numpy() if boxes.conf is not None else np.ones((len(boxes),), dtype=np.float32)
-            tids = None
-            if hasattr(boxes, "id") and boxes.id is not None:
-                tids = boxes.id.cpu().numpy().astype(int)
-            else:
-                tids = -np.ones((len(boxes),), dtype=np.int32)
-
-            # sort by confidence
-            order = np.argsort(-confs)
-            for i in order:
-                tid = int(tids[i])
-                x1, y1, x2, y2 = xyxy[i].tolist()
-                c = float(confs[i])
-
-                bw = x2 - x1
-                bh = y2 - y1
-                x1p = x1 - BOX_PAD_FRAC * bw
-                y1p = y1 - BOX_PAD_FRAC * bh
-                x2p = x2 + BOX_PAD_FRAC * bw
-                y2p = y2 + BOX_PAD_FRAC * bh
-
-                b = clamp_box(x1p, y1p, x2p, y2p, W, H)
-                if b is None:
-                    continue
-                x1i, y1i, x2i, y2i = b
-
-                area = (x2i - x1i) * (y2i - y1i)
-                if area < MIN_BOX_AREA:
-                    continue
-
-                crop = frame_bgr[y1i:y2i, x1i:x2i]
-                if crop.size == 0:
-                    continue
-                if lap_var(crop) < BLUR_THRES:
-                    continue
-
-                det_meta.append((tid, (x1i, y1i, x2i, y2i), c))
-                crops_rgb.append(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-
-        # embed
-        t_emb0 = time.time()
-        Z = embed_crops(self.embedder, crops_rgb, DEVICE)
-        embed_ms = (time.time() - t_emb0) * 1000.0
-
-        # match (per track with EMA)
-        t_match0 = time.time()
-        preds = []  # (tid, pred, sim, box)
-        active_now = set()
-
-        for i in range(Z.shape[0]):
-            tid, box, conf = det_meta[i]
-            z = Z[i]
-
-            if tid < 0:
-                pred, sim = match_marker(z, self.registry)
-                preds.append((tid, pred, sim, box))
-                continue
-
-            active_now.add(tid)
-            if tid not in self.states:
-                self.states[tid] = TrackState(track_id=tid, last_seen_frame=self.frame_idx)
-                self.event_rows.append([self.trial_id, self.trial_type, self.condition_str(), now_ms(), "track_new", tid, "", "", ""])
-            self.states[tid].last_seen_frame = self.frame_idx
-
-            pred, sim = update_identity(self.states[tid], z, self.registry)
-            preds.append((tid, pred, float(sim), box))
-
-        match_ms = (time.time() - t_match0) * 1000.0
-
-        new_tracks = len(active_now - self.active_prev)
-        lost_tracks = len(self.active_prev - active_now)
-        if lost_tracks > 0:
-            for tid_lost in (self.active_prev - active_now):
-                self.event_rows.append([self.trial_id, self.trial_type, self.condition_str(), now_ms(), "track_lost", tid_lost, "", "", ""])
-        self.active_prev = active_now
-
-        # unknown tracks count
-        unknown_tracks = sum(1 for (tid, pred, sim, box) in preds if pred == "unknown")
-
-        # accuracy if GT assigned
-        classes = self.registry.names()
-        c2i = {c: i for i, c in enumerate(classes)}
-        if not hasattr(self, "_cm"):
-            self._cm = np.zeros((len(classes), len(classes)), dtype=np.int32)
-            self._gt_total = 0
-            self._gt_correct = 0
-
-        for (tid, pred, sim, box) in preds:
-            if tid in self.gt_map and pred in c2i and self.gt_map[tid] in c2i:
-                gt = self.gt_map[tid]
-                self._cm[c2i[gt], c2i[pred]] += 1
-                self._gt_total += 1
-                if gt == pred:
-                    self._gt_correct += 1
-
-        # clickable boxes (canvas coords)
-        clickable_boxes = []  # (tid, cx1,cy1,cx2,cy2)
-        for (tid, pred, sim, box) in preds:
-            x1i, y1i, x2i, y2i = box
-            cx1 = int(offx + x1i * s)
-            cy1 = int(offy + y1i * s)
-            cx2 = int(offx + x2i * s)
-            cy2 = int(offy + y2i * s)
-            clickable_boxes.append((tid, cx1, cy1, cx2, cy2))
-
-            col = OK if pred != "unknown" else UNKNOWN
-            if self.selected_track is not None and tid == self.selected_track:
-                col = (255, 255, 255)
-            cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), col, 2)
-
-            label = f"T{tid} {pred} {sim:.2f}"
-            if tid in self.gt_map:
-                label += f" | GT:{self.gt_map[tid]}"
-            put_text(canvas, label, (cx1, max(18, cy1 - 8)), scale=0.50, thick=2, color=TEXT)
-
-        # GT assignment panel (click marker buttons)
-        draw_rounded_rect(canvas, 20, 100, 340, 690, r=16, color=PANEL, thickness=-1)
-        put_text(canvas, "GT Assignment", (42, 140), scale=0.62, color=TEXT)
-        put_text(canvas, "Click a box, then click a name", (42, 170), scale=0.48, color=MUTED)
-
-        gt_toggle = Button("GT: ON" if self.gt_enabled else "GT: OFF", (42, 190, 260, 50), tag="gt")
-        gt_toggle.toggled = self.gt_enabled
-        gt_toggle.hover = point_in_rect(self.mouse_x, self.mouse_y, gt_toggle.rect)
-        draw_button(canvas, gt_toggle)
-
-        y = 260
-        marker_buttons = []
-        for nm in classes:
-            b = Button(nm, (42, y, 260, 52), tag=f"gt_{nm}", enabled=self.gt_enabled and (self.selected_track is not None))
-            b.hover = point_in_rect(self.mouse_x, self.mouse_y, b.rect)
-            marker_buttons.append(b)
-            draw_button(canvas, b)
-            y += 62
-
-        clear_sel = Button("Clear Selection", (42, 610, 260, 50), enabled=(self.selected_track is not None), tag="clear")
-        clear_sel.hover = point_in_rect(self.mouse_x, self.mouse_y, clear_sel.rect)
-        draw_button(canvas, clear_sel)
-
-        # HUD
-        remaining = max(0.0, self.trial_duration - (time.time() - self.trial_t0))
-        acc = (self._gt_correct / self._gt_total) if self._gt_total > 0 else None
-
-        self.draw_header(
-            canvas,
-            f"Trial: {self.trial_type} | Condition: {self.condition_str()} | Remaining: {remaining:.1f}s",
-            f"Dets:{len(preds)} Tracks:{len(active_now)}  Lat(ms): det+track {det_track_ms:.1f} embed {embed_ms:.1f} match {match_ms:.1f}"
-        )
-        if acc is not None:
-            put_text(canvas, f"GT accuracy: {acc*100:.1f}%  (samples={self._gt_total})", (380, 110), scale=0.58, color=OK)
-
-        # stop button
-        stop = Button("End Trial", (1040, 640, 220, 56), tag="stop")
-        stop.hover = point_in_rect(self.mouse_x, self.mouse_y, stop.rect)
-        draw_button(canvas, stop)
-
-        # clicks
-        if self.consume_click():
-            # select track by clicking a box
-            for (tid, cx1, cy1, cx2, cy2) in clickable_boxes:
-                if point_in_rect(self.mouse_x, self.mouse_y, (cx1, cy1, cx2 - cx1, cy2 - cy1)):
-                    self.selected_track = tid
-                    break
-
-            # gt toggle
-            if gt_toggle.hover:
-                self.gt_enabled = not self.gt_enabled
-
-            # assign gt by clicking marker name
-            for b in marker_buttons:
-                if b.enabled and b.hover and b.tag.startswith("gt_"):
-                    nm = b.tag.replace("gt_", "")
-                    self.gt_map[self.selected_track] = nm
-                    self.event_rows.append([self.trial_id, self.trial_type, self.condition_str(), now_ms(), "gt_assign", self.selected_track, "", nm, ""])
-                    break
-
-            if clear_sel.enabled and clear_sel.hover:
-                self.selected_track = None
-
-            if stop.hover:
-                self.finish_trial()
-                return
-
-        # timing and logs
-        total_ms = (time.time() - t_frame0) * 1000.0
-        self.lat_ms.append(total_ms)
-
-        self.frame_rows.append([
-            self.trial_id, self.trial_type, self.condition_str(),
-            self.frame_idx, now_ms(),
-            len(preds), len(active_now),
-            round(det_track_ms, 3), round(embed_ms, 3), round(match_ms, 3), round(total_ms, 3),
-            new_tracks, lost_tracks,
-            unknown_tracks
-        ])
-
-        # auto-end
-        if remaining <= 0.0:
-            self.finish_trial()
+        # reset Ultralytics trackers between runs if possible
+        try:
+            if hasattr(self.yolo, "predictor") and self.yolo.predictor is not None:
+                if hasattr(self.yolo.predictor, "trackers"):
+                    del self.yolo.predictor.trackers
+                if hasattr(self.yolo.predictor, "vid_path"):
+                    del self.yolo.predictor.vid_path
+        except Exception:
+            pass
 
     def finish_trial(self):
         ensure_dir(RUN_DIR)
@@ -1130,12 +1689,11 @@ class PINCHApp:
             "avg_switches_per_track": float(np.mean([s.switches for s in self.states.values()])) if len(self.states) else 0.0,
             "frame_log_csv": frame_csv,
             "event_log_csv": event_csv,
-            "gt_samples": int(getattr(self, "_gt_total", 0)),
-            "top1_accuracy": (float(self._gt_correct / self._gt_total) if getattr(self, "_gt_total", 0) > 0 else None),
+            "gt_samples": int(self._gt_total),
+            "top1_accuracy": (float(self._gt_correct / self._gt_total) if self._gt_total > 0 else None),
         }
 
-        # confusion matrix only if gt exists
-        if getattr(self, "_gt_total", 0) > 0 and self.registry is not None:
+        if self._gt_total > 0 and self.registry is not None:
             cm_path = os.path.join(out_trial_dir, "confusion_matrix.png")
             save_confusion_matrix(self.registry.names(), self._cm, cm_path)
             summary["confusion_matrix_png"] = cm_path
@@ -1146,39 +1704,221 @@ class PINCHApp:
         with open(summ_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
-        # reset GT accumulators for next run
-        if hasattr(self, "_cm"):
-            delattr(self, "_cm")
-        if hasattr(self, "_gt_total"):
-            delattr(self, "_gt_total")
-        if hasattr(self, "_gt_correct"):
-            delattr(self, "_gt_correct")
+        # back to appropriate menu
+        self.source.open_webcam(self.source.webcam_index)
+        if self.screen == "demo_trial_run":
+            self.screen = "demo_menu"
+        else:
+            self.screen = "main"
 
-        self.screen = "main"
+    def trial_run_tick(self, frame_bgr, canvas, s, offx, offy, view_rect):
+        assert self.registry is not None
 
-    # ---------------- main tick ----------------
+        t_frame0 = time.time()
+        self.frame_idx += 1
 
+        t_det0 = time.time()
+        try:
+            if hasattr(self.yolo, "predictor") and self.yolo.predictor is not None:
+                if getattr(self.yolo.predictor, "trackers", "missing") is None:
+                    del self.yolo.predictor.trackers
+                    if hasattr(self.yolo.predictor, "vid_path"):
+                        del self.yolo.predictor.vid_path
+        except Exception:
+            pass
+        r = self.yolo.track(
+            frame_bgr,
+            tracker=TRACKER_YAML,
+            persist=True,
+            conf=DET_CONF,
+            iou=DET_IOU,
+            verbose=False
+        )[0]
+        det_track_ms = (time.time() - t_det0) * 1000.0
+
+        boxes = r.boxes
+        det_meta = []
+        crops_rgb = []
+
+        H, W = frame_bgr.shape[:2]
+        if boxes is not None and len(boxes) > 0:
+            xyxy = boxes.xyxy.cpu().numpy()
+            confs = boxes.conf.cpu().numpy() if boxes.conf is not None else np.ones((len(boxes),), dtype=np.float32)
+            tids = boxes.id.cpu().numpy().astype(int) if (hasattr(boxes, "id") and boxes.id is not None) else -np.ones((len(boxes),), dtype=np.int32)
+
+            order = np.argsort(-confs)
+            for i in order:
+                tid = int(tids[i])
+                x1, y1, x2, y2 = xyxy[i].tolist()
+                bw = x2 - x1
+                bh = y2 - y1
+
+                x1p = x1 - BOX_PAD_FRAC * bw
+                y1p = y1 - BOX_PAD_FRAC * bh
+                x2p = x2 + BOX_PAD_FRAC * bw
+                y2p = y2 + BOX_PAD_FRAC * bh
+
+                b = clamp_box(x1p, y1p, x2p, y2p, W, H)
+                if b is None:
+                    continue
+                x1i, y1i, x2i, y2i = b
+
+                area = (x2i - x1i) * (y2i - y1i)
+                if area < MIN_BOX_AREA:
+                    continue
+
+                crop = frame_bgr[y1i:y2i, x1i:x2i]
+                if crop.size == 0:
+                    continue
+                if lap_var(crop) < BLUR_THRES:
+                    continue
+
+                det_meta.append((tid, (x1i, y1i, x2i, y2i)))
+                crops_rgb.append(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+
+        t_emb0 = time.time()
+        Z = embed_crops(self.embedder, crops_rgb, DEVICE)
+        embed_ms = (time.time() - t_emb0) * 1000.0
+
+        t_match0 = time.time()
+        preds = []
+        active_now = set()
+
+        for i in range(Z.shape[0]):
+            tid, box = det_meta[i]
+            z = Z[i]
+
+            if tid < 0:
+                pred, sim = match_marker(z, self.registry)
+                preds.append((tid, pred, float(sim), box))
+                continue
+
+            active_now.add(tid)
+            if tid not in self.states:
+                self.states[tid] = TrackState(track_id=tid, last_seen_frame=self.frame_idx)
+                self.event_rows.append([self.trial_id, self.trial_type, self.condition_str(), now_ms(), "track_new", tid, "", "", ""])
+            self.states[tid].last_seen_frame = self.frame_idx
+
+            pred, sim = update_identity(self.states[tid], z, self.registry)
+            preds.append((tid, pred, float(sim), box))
+
+        match_ms = (time.time() - t_match0) * 1000.0
+
+        new_tracks = len(active_now - self.active_prev)
+        lost_tracks = len(self.active_prev - active_now)
+        for tid_lost in (self.active_prev - active_now):
+            self.event_rows.append([self.trial_id, self.trial_type, self.condition_str(), now_ms(), "track_lost", tid_lost, "", "", ""])
+        self.active_prev = active_now
+
+        unknown_tracks = sum(1 for (_, pred, _, _) in preds if pred == "unknown")
+
+        remaining = max(0.0, self.trial_duration - (time.time() - self.trial_t0))
+        self.draw_sidebar_card(
+            canvas,
+            "Trial HUD",
+            [
+                f"Trial: {self.trial_type}",
+                f"Condition: {self.condition_str()}",
+                f"Remaining: {remaining:.1f}s",
+                f"Dets: {len(preds)} Tracks: {len(active_now)}",
+                f"Latency(ms): det {det_track_ms:.1f} emb {embed_ms:.1f} match {match_ms:.1f}",
+            ],
+            y=92,
+            h=150,
+        )
+
+        # boxes
+        clickable_boxes = []
+        for (tid, pred, sim, box) in preds:
+            x1i, y1i, x2i, y2i = box
+            cx1 = int(offx + x1i * s)
+            cy1 = int(offy + y1i * s)
+            cx2 = int(offx + x2i * s)
+            cy2 = int(offy + y2i * s)
+
+            col = OK if pred != "unknown" else (120, 170, 255)
+            cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), col, 2)
+            draw_text(canvas, f"T{tid} {pred} {sim:.2f}", cx1, max(20, cy1 - 8), scale=0.50, color=WHITE, thick=2)
+            clickable_boxes.append((tid, (cx1, cy1, cx2 - cx1, cy2 - cy1)))
+
+        stop = Button("End trial", (28, CANVAS_H - 72, 300, 52), tag="stop")
+        stop.hover = point_in(self.mouse_x, self.mouse_y, stop.rect)
+        draw_button(canvas, stop, primary=True)
+
+        clicked = self.consume_click()
+        if clicked and stop.hover:
+            self.finish_trial()
+            return
+
+        total_ms = (time.time() - t_frame0) * 1000.0
+        self.lat_ms.append(total_ms)
+
+        self.frame_rows.append([
+            self.trial_id, self.trial_type, self.condition_str(),
+            self.frame_idx, now_ms(),
+            len(preds), len(active_now),
+            round(det_track_ms, 3), round(embed_ms, 3), round(match_ms, 3), round(total_ms, 3),
+            new_tracks, lost_tracks,
+            unknown_tracks
+        ])
+
+        if remaining <= 0.0:
+            self.finish_trial()
+
+    # ---------------- MAIN TICK ----------------
     def tick(self, frame_bgr, key):
-        canvas, s, offx, offy = compose_canvas(frame_bgr)
+        canvas, s, offx, offy, view_rect = compose_canvas(frame_bgr)
+        draw_text(canvas, "ESC/Q: exit", 380, CANVAS_H - 14, scale=0.46, color=MUTED, thick=2)
 
         if self.screen == "main":
             self.main_screen(canvas)
+        elif self.screen == "live_enroll":
+            self.live_enroll_screen(frame_bgr, canvas, s, offx, offy, key)
+        elif self.screen == "live_trial_setup":
+            self.live_trial_setup_screen(canvas)
+        elif self.screen == "live_trial_run":
+            self.draw_topbar(canvas, "Live Trial Running", "Routing is running from webcam. End anytime.")
+            self.trial_run_tick(frame_bgr, canvas, s, offx, offy, view_rect)
+        elif self.screen == "demo_menu":
+            self.demo_menu_screen(canvas)
+        elif self.screen == "demo_enroll_setup":
+            self.demo_enroll_setup_screen(canvas, key)
+        elif self.screen == "demo_enroll_run":
+            self.demo_enroll_run_screen(frame_bgr, canvas, s, offx, offy)
+        elif self.screen == "demo_trial_setup":
+            self.demo_trial_setup_screen(canvas, key)
+        elif self.screen == "demo_trial_run":
+            self.draw_topbar(canvas, "Demo Trial Running", "Routing is running.")
+            self.trial_run_tick(frame_bgr, canvas, s, offx, offy, view_rect)
 
-        elif self.screen == "enroll_setup":
-            self.enroll_setup_screen(canvas, key)
+        cv2.imshow(self.win, canvas)
 
-        elif self.screen == "enroll_capture":
-            self.enroll_capture_screen(frame_bgr, canvas, s, offx, offy)
+    def run(self):
+        while self.running:
+            if window_closed(self.win):
+                break
 
-        elif self.screen == "trial_setup":
-            self.trial_setup_screen(canvas)
+            ok, frame = self.source.read()
+            if not ok or frame is None:
+                time.sleep(0.01)
+                continue
 
-        elif self.screen == "trial_run":
-            self.trial_run_screen(frame_bgr, canvas, s, offx, offy)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q"), ord("Q")):
+                break
 
-        cv2.imshow("PINCH Live", canvas)
+            # route to correct setup/run screens
+            if self.screen == "live_trials":
+                self.screen = "live_trial_setup"
+
+            self.tick(frame, key)
+
+        self.running = False
 
 
+# ============================================================
+# MAIN
+# ============================================================
 def main():
     set_seed(0)
     ensure_dir(RUN_DIR)
@@ -1188,28 +1928,20 @@ def main():
     if not os.path.isfile(EMBEDDER_WEIGHTS):
         raise FileNotFoundError(f"EMBEDDER_WEIGHTS not found: {EMBEDDER_WEIGHTS}")
 
-    cap = open_source()
-    if not cap.isOpened():
-        raise RuntimeError("Failed to open camera/video source.")
-
     yolo = YOLO(YOLO_WEIGHTS)
     embedder = load_embedder(EMBEDDER_WEIGHTS, DEVICE)
 
     app = PINCHApp(yolo, embedder)
+    app.run()
 
-    while app.running:
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            break
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:  # ESC hard exit
-            break
-
-        app.tick(frame, key)
-
-    cap.release()
-    cv2.destroyAllWindows()
+    try:
+        app.source.release()
+    except Exception:
+        pass
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
