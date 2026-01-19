@@ -1,0 +1,16 @@
+{
+  "trial_id": "1768785211853_swipe",
+  "trial_type": "swipe",
+  "condition": "near/bright",
+  "frames": 28,
+  "duration_sec": 12.0,
+  "mean_total_latency_ms": 255.25146484375,
+  "p95_total_latency_ms": 280.9574279785156,
+  "mean_fps": 2.3333333333333335,
+  "track_count": 3,
+  "avg_switches_per_track": 0.0,
+  "frame_log_csv": "C:\\Users\\USER\\Desktop\\my_pinch\\Pinch-Model\\hasky\\letsgo\\pinch_live\\trials\\1768785211853_swipe\\frame_log.csv",
+  "event_log_csv": "C:\\Users\\USER\\Desktop\\my_pinch\\Pinch-Model\\hasky\\letsgo\\pinch_live\\trials\\1768785211853_swipe\\event_log.csv",
+  "gt_samples": 0,
+  "top1_accuracy": null
+}
