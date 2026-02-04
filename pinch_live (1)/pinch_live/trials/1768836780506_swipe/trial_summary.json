@@ -1,0 +1,16 @@
+{
+  "trial_id": "1768836780506_swipe",
+  "trial_type": "swipe",
+  "condition": "near/bright",
+  "frames": 48,
+  "duration_sec": 12.0,
+  "mean_total_latency_ms": 206.3399200439453,
+  "p95_total_latency_ms": 237.49922256469728,
+  "mean_fps": 4.0,
+  "track_count": 2,
+  "avg_switches_per_track": 0.0,
+  "frame_log_csv": "C:\\Users\\ebube\\Downloads\\PINCH-main\\PINCH-main\\letsgo\\pinch_live\\trials\\1768836780506_swipe\\frame_log.csv",
+  "event_log_csv": "C:\\Users\\ebube\\Downloads\\PINCH-main\\PINCH-main\\letsgo\\pinch_live\\trials\\1768836780506_swipe\\event_log.csv",
+  "gt_samples": 0,
+  "top1_accuracy": null
+}

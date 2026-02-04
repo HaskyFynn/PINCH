@@ -1,0 +1,9 @@
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421876.784478, "slot_idx": 0, "true_id": "Fatima", "stable_id": "Fatima", "t_since_trial_s": 1.1757769584655762}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421877.744672, "slot_idx": 0, "true_id": "Fatima", "stable_id": "Ameer", "t_since_trial_s": 2.1359710693359375}
+{"event": "reid", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421877.744672, "slot_idx": 0, "true_id": "Fatima", "stable_id": "Ameer", "reid_time_s": 0.7507851123809814}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421881.836672, "slot_idx": 1, "true_id": "Zubair", "stable_id": "Zubair", "t_since_trial_s": 6.227971076965332}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421883.286866, "slot_idx": 1, "true_id": "Zubair", "stable_id": "Zubair", "t_since_trial_s": 7.678164958953857}
+{"event": "reid", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421883.286866, "slot_idx": 1, "true_id": "Zubair", "stable_id": "Zubair", "reid_time_s": 1.3129558563232422}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421883.484326, "slot_idx": 0, "true_id": "Fatima", "stable_id": "Ameer", "t_since_trial_s": 7.875624895095825}
+{"event": "reid", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421883.484326, "slot_idx": 0, "true_id": "Fatima", "stable_id": "Ameer", "reid_time_s": 5.41287088394165}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_151755", "t_wall": 1768421884.752892, "slot_idx": 0, "true_id": "Fatima", "stable_id": "Ameer", "t_since_trial_s": 9.144191026687622}

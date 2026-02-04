@@ -1,0 +1,3 @@
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_150804", "t_wall": 1768421285.024214, "slot_idx": 3, "true_id": "Sana", "stable_id": "T_1", "t_since_trial_s": 0.9279069900512695}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_150804", "t_wall": 1768421285.624332, "slot_idx": 3, "true_id": "Sana", "stable_id": "Sana", "t_since_trial_s": 1.5280249118804932}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_150804", "t_wall": 1768421289.192396, "slot_idx": 0, "true_id": "Fatima", "stable_id": "Ameer", "t_since_trial_s": 5.096088886260986}

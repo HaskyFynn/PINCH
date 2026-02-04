@@ -1,0 +1,2 @@
+trial_id,trial_type,condition,t_ms,event,track_id,pred,gt,sim
+1768837003793_swipe,swipe,near/bright,1768837004501,track_new,1,,,

@@ -1,0 +1,2 @@
+trial_id,trial_type,condition,frame_idx,t_ms,n_dets,n_tracks,det_track_ms,embed_ms,match_ms,total_ms,new_tracks,lost_tracks,unknown_tracks
+1768836623468_swipe,swipe,near/bright,1,1768836638875,1,1,15016.628,69.318,0.998,15105.017,1,0,1

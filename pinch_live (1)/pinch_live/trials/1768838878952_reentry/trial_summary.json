@@ -1,0 +1,16 @@
+{
+  "trial_id": "1768838878952_reentry",
+  "trial_type": "reentry",
+  "condition": "near/bright",
+  "frames": 57,
+  "duration_sec": 18.0,
+  "mean_total_latency_ms": 272.62005615234375,
+  "p95_total_latency_ms": 391.70689697265624,
+  "mean_fps": 3.1666666666666665,
+  "track_count": 7,
+  "avg_switches_per_track": 0.14285714285714285,
+  "frame_log_csv": "C:\\Users\\ebube\\Downloads\\PINCH-main\\PINCH-main\\letsgo\\pinch_live\\trials\\1768838878952_reentry\\frame_log.csv",
+  "event_log_csv": "C:\\Users\\ebube\\Downloads\\PINCH-main\\PINCH-main\\letsgo\\pinch_live\\trials\\1768838878952_reentry\\event_log.csv",
+  "gt_samples": 0,
+  "top1_accuracy": null
+}

@@ -1,0 +1,2 @@
+cond,stable_acc_mean,stable_acc_std,miss_rate_mean,wrong_rate_mean,recognized_stable_mean,lat_total_ms_med_mean,lat_total_ms_p95_mean,fps_med_mean
+Bright | Near,0.028685859626318738,0.030946556951878607,0.79810904647177,0.03683066995228723,0.06551652957860597,146.82081543333334,241.57932756333332,4.778688266666666

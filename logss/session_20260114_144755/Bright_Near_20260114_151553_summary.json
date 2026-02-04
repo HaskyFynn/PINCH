@@ -1,0 +1,60 @@
+{
+  "trial_id": "Bright_Near_20260114_151553",
+  "lighting": "Bright",
+  "distance": "Near",
+  "trial_seconds": 10.0,
+  "roster": [
+    "Fatima",
+    "Zubair",
+    "Ameer",
+    "Sana"
+  ],
+  "sim_thresh": 0.75,
+  "margin_min": 0.05,
+  "stable_n": 1,
+  "per_frame_csv": "/Users/fatimaqasem/Programming/PINCH-main/logs/session_20260114_144755/Bright_Near_20260114_151553_per_frame.csv",
+  "events_jsonl": "/Users/fatimaqasem/Programming/PINCH-main/logs/session_20260114_144755/Bright_Near_20260114_151553_events.jsonl",
+  "lat_det_ms_median": 82.65113830566406,
+  "lat_total_ms_median": 109.8074951171875,
+  "lat_total_ms_p95": 315.50372924804685,
+  "proc_fps_median": 4.987127780914307,
+  "drained_frames_median": 2.0,
+  "per_slot": [
+    {
+      "slot_idx": 0,
+      "true_id": "Fatima",
+      "frames_total": 45,
+      "miss_rate": 0.7333333333333333,
+      "correct_rate_accepted": 0.0,
+      "wrong_rate_accepted": 0.17777777777777778,
+      "correct_rate_stable": 0.0
+    },
+    {
+      "slot_idx": 1,
+      "true_id": "Zubair",
+      "frames_total": 45,
+      "miss_rate": 1.0,
+      "correct_rate_accepted": 0.0,
+      "wrong_rate_accepted": 0.0,
+      "correct_rate_stable": 0.0
+    },
+    {
+      "slot_idx": 2,
+      "true_id": "Ameer",
+      "frames_total": 45,
+      "miss_rate": 0.7333333333333333,
+      "correct_rate_accepted": 0.08888888888888889,
+      "wrong_rate_accepted": 0.0,
+      "correct_rate_stable": 0.08888888888888889
+    },
+    {
+      "slot_idx": 3,
+      "true_id": "Sana",
+      "frames_total": 45,
+      "miss_rate": 1.0,
+      "correct_rate_accepted": 0.0,
+      "wrong_rate_accepted": 0.0,
+      "correct_rate_stable": 0.0
+    }
+  ]
+}

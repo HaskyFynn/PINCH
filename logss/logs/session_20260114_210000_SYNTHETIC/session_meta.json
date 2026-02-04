@@ -1,0 +1,27 @@
+{
+  "session_id": "session_20260114_210000_SYNTHETIC",
+  "note": "SYNTHETIC dataset for paper drafting only. Replace with real logs later.",
+  "created_local": "2026-01-14 21:00:00",
+  "model_desc": "synthetic",
+  "min_conf": 0.45,
+  "proto_k": 8,
+  "proto_dup_sim": 0.93,
+  "flip": true,
+  "max_drain": 2,
+  "lights": [
+    "Bright",
+    "Daylight",
+    "Dim"
+  ],
+  "distances": [
+    "Near",
+    "Mid",
+    "Far"
+  ],
+  "roster_left_to_right": [
+    "diana",
+    "chen",
+    "alice",
+    "bob"
+  ]
+}

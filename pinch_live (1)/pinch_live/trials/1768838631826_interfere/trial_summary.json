@@ -1,0 +1,16 @@
+{
+  "trial_id": "1768838631826_interfere",
+  "trial_type": "interfere",
+  "condition": "near/dim",
+  "frames": 63,
+  "duration_sec": 18.0,
+  "mean_total_latency_ms": 243.3776397705078,
+  "p95_total_latency_ms": 300.07558288574216,
+  "mean_fps": 3.5,
+  "track_count": 9,
+  "avg_switches_per_track": 0.0,
+  "frame_log_csv": "C:\\Users\\ebube\\Downloads\\PINCH-main\\PINCH-main\\letsgo\\pinch_live\\trials\\1768838631826_interfere\\frame_log.csv",
+  "event_log_csv": "C:\\Users\\ebube\\Downloads\\PINCH-main\\PINCH-main\\letsgo\\pinch_live\\trials\\1768838631826_interfere\\event_log.csv",
+  "gt_samples": 0,
+  "top1_accuracy": null
+}

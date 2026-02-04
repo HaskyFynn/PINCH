@@ -1,0 +1,5 @@
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_150725", "t_wall": 1768421246.8299258, "slot_idx": 2, "true_id": "Ameer", "stable_id": "Ameer", "t_since_trial_s": 1.3631277084350586}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_150725", "t_wall": 1768421247.5246441, "slot_idx": 3, "true_id": "Sana", "stable_id": "Ameer", "t_since_trial_s": 2.0578460693359375}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_150725", "t_wall": 1768421248.8547661, "slot_idx": 2, "true_id": "Ameer", "stable_id": "Ameer", "t_since_trial_s": 3.387968063354492}
+{"event": "reid", "trial_id": "Bright_Near_20260114_150725", "t_wall": 1768421248.8547661, "slot_idx": 2, "true_id": "Ameer", "stable_id": "Ameer", "reid_time_s": 1.3301219940185547}
+{"event": "stable_commit", "trial_id": "Bright_Near_20260114_150725", "t_wall": 1768421251.655762, "slot_idx": 1, "true_id": "Zubair", "stable_id": "Zubair", "t_since_trial_s": 6.188963890075684}

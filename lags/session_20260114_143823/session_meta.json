@@ -1,0 +1,20 @@
+{
+  "session_id": "session_20260114_143823",
+  "created_local": "2026-01-14 14:38:23",
+  "model_desc": "PT+ByteTrack: bestmodel.pt",
+  "min_conf": 0.45,
+  "proto_k": 8,
+  "proto_dup_sim": 0.93,
+  "flip": true,
+  "max_drain": 2,
+  "lights": [
+    "Bright",
+    "Dim",
+    "Daylight"
+  ],
+  "distances": [
+    "Near",
+    "Mid",
+    "Far"
+  ]
+}

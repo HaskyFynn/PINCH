@@ -561,6 +561,12 @@ class MarkerProfile:
     enroll_used: int
     source_mode: str = ""
     source_path: str = ""
+    # Density-aware scoring extras (all optional / backward compatible)
+    mean: List[float] = None          # per-dimension mean of enrollment embeddings
+    var: List[float] = None           # per-dimension variance of enrollment embeddings
+    ll_thr: float = 0.0               # log-likelihood threshold (diagonal Gaussian)
+    # Stored enrollment embeddings for optional classifier / analysis
+    enroll_embs: List[List[float]] = None
 
 class Registry:
     def __init__(self):
@@ -603,7 +609,17 @@ def kmeans_prototypes(X: np.ndarray, k: int, iters: int, seed: int = 0) -> np.nd
                 C[j] = Xn[np.random.randint(0, Xn.shape[0])]
     return C.astype(np.float32)
 
-def build_profile_from_enrollment(marker_id: str, embs: np.ndarray) -> Tuple[List[List[float]], float]:
+def build_profile_from_enrollment(marker_id: str, embs: np.ndarray) -> Tuple[List[List[float]], float, Optional[List[float]], Optional[List[float]], float]:
+    """
+    Build a MarkerProfile summary from enrollment embeddings.
+
+    Returns:
+        protos:   cosine-space k-means prototypes
+        thr:      cosine similarity threshold (percentile over best proto sims)
+        mean:     per-dim mean (for diagonal Gaussian density)
+        var:      per-dim variance
+        ll_thr:   log-likelihood threshold (percentile over in-class log-likelihoods)
+    """
     if embs.shape[0] < 10:
         protos = kmeans_prototypes(embs, k=min(2, embs.shape[0]), iters=8, seed=0)
     else:
@@ -612,12 +628,43 @@ def build_profile_from_enrollment(marker_id: str, embs: np.ndarray) -> Tuple[Lis
     sims = embs @ protos.T if protos.shape[0] > 0 else np.zeros((embs.shape[0], 1), dtype=np.float32)
     best = sims.max(axis=1) if sims.shape[1] > 0 else np.zeros((embs.shape[0],), dtype=np.float32)
     thr = float(np.percentile(best, THRESH_PERCENTILE)) if best.shape[0] > 0 else 0.0
-    return protos.tolist(), thr
+
+    # Density-aware stats (diagonal Gaussian in embedding space)
+    if embs.shape[0] > 0:
+        Xn = np.stack([safe_norm(x) for x in embs], axis=0)
+        mean = Xn.mean(axis=0).astype(np.float32)
+        var = Xn.var(axis=0).astype(np.float32) + 1e-6
+        # Unnormalized log-likelihood up to constant factor
+        diff = Xn - mean[None, :]
+        inv_var = 1.0 / var[None, :]
+        ll = -0.5 * np.sum(diff * diff * inv_var, axis=1)
+        ll_thr = float(np.percentile(ll, THRESH_PERCENTILE))
+        return protos.tolist(), thr, mean.tolist(), var.tolist(), ll_thr
+
+    return protos.tolist(), thr, None, None, 0.0
+
+
+def _marker_loglike(emb: np.ndarray, mean: Optional[List[float]], var: Optional[List[float]]) -> float:
+    """
+    Compute an unnormalized diagonal-Gaussian log-likelihood for a single embedding.
+    Falls back to -inf if mean/var are not available.
+    """
+    if mean is None or var is None:
+        return float("-inf")
+    m = np.asarray(mean, dtype=np.float32)
+    v = np.asarray(var, dtype=np.float32)
+    if m.shape[0] != emb.shape[0] or v.shape[0] != emb.shape[0]:
+        return float("-inf")
+    diff = emb - m
+    inv_var = 1.0 / (v + 1e-6)
+    return float(-0.5 * np.sum(diff * diff * inv_var))
 
 def match_marker(emb: np.ndarray, registry: Registry) -> Tuple[str, float]:
     best_name = "unknown"
     best_sim = -1.0
     best_thr = None
+    best_ll = float("-inf")
+    best_ll_thr: Optional[float] = None
     for m in registry.markers:
         P = np.array(m.proto, dtype=np.float32)
         if P.size == 0:
@@ -627,8 +674,19 @@ def match_marker(emb: np.ndarray, registry: Registry) -> Tuple[str, float]:
             best_sim = sim
             best_name = m.marker_id
             best_thr = m.thr
-    if best_name != "unknown" and best_thr is not None and best_sim < best_thr:
-        return "unknown", best_sim
+            # density score for this marker (if available)
+            best_ll = _marker_loglike(emb, getattr(m, "mean", None), getattr(m, "var", None))
+            best_ll_thr = getattr(m, "ll_thr", None)
+
+    # Open-set rejection using both cosine and density thresholds
+    if best_name != "unknown":
+        reject = False
+        if best_thr is not None and best_sim < best_thr:
+            reject = True
+        if (best_ll_thr is not None) and (best_ll < best_ll_thr):
+            reject = True
+        if reject:
+            return "unknown", best_sim
     return best_name, best_sim
 
 # ============================================================
@@ -643,22 +701,65 @@ class TrackState:
     switches: int = 0
     seen_frames: int = 0
     last_seen_frame: int = -1
+    # how many consecutive frames proposed as unknown while last_name != "unknown"
+    unknown_streak: int = 0
 
-def update_identity(ts: TrackState, z: np.ndarray, registry: Registry) -> Tuple[str, float]:
+
+def update_identity(ts: TrackState, z: np.ndarray, registry: Registry, cls_ctx: Optional[Dict[str, np.ndarray]] = None) -> Tuple[str, float]:
     if ts.z_ema is None:
         ts.z_ema = z.copy()
     else:
         ts.z_ema = safe_norm(EMA_ALPHA * ts.z_ema + (1.0 - EMA_ALPHA) * z)
 
-    pred, sim = match_marker(ts.z_ema, registry)
+    # Prototype + density-based candidate
+    pred_proto, sim_proto = match_marker(ts.z_ema, registry)
+    final_pred = pred_proto
+    final_score = sim_proto
 
-    if pred != ts.last_name:
-        if sim >= ts.last_sim + DECISION_HYST:
-            ts.switches += 1
-            ts.last_name = pred
-            ts.last_sim = sim
+    # Optional classifier-based rescue for unknowns
+    if cls_ctx is not None and pred_proto == "unknown":
+        W = cls_ctx.get("W")
+        b = cls_ctx.get("b")
+        names = cls_ctx.get("names", [])
+        thr = cls_ctx.get("thr")
+        if W is not None and b is not None and thr is not None and len(names) == W.shape[0]:
+            z_vec = ts.z_ema.astype(np.float32)
+            logits = W @ z_vec + b
+            logits = logits - float(np.max(logits))
+            exp = np.exp(logits)
+            denom = float(np.sum(exp)) + 1e-9
+            probs = exp / denom
+            k = int(np.argmax(probs))
+            p_max = float(probs[k])
+            p_thr = float(thr[k])
+            if p_max >= p_thr:
+                final_pred = names[k]
+                final_score = p_max
+
+    # Temporal logic: short runs of low confidence do not immediately flip to unknown
+    if final_pred != ts.last_name:
+        # Grace period before committing to unknown when we previously had an ID
+        if final_pred == "unknown" and ts.last_name != "unknown":
+            ts.unknown_streak += 1
+            # Require multiple consecutive frames before switching to unknown
+            if ts.unknown_streak < 3:
+                final_pred = ts.last_name
+                final_score = ts.last_sim
+            else:
+                ts.switches += 1
+                ts.last_name = final_pred
+                ts.last_sim = final_score
+        else:
+            if final_score >= ts.last_sim + DECISION_HYST:
+                ts.switches += 1
+                ts.last_name = final_pred
+                ts.last_sim = final_score
+        if final_pred != "unknown":
+            ts.unknown_streak = 0
     else:
-        ts.last_sim = max(ts.last_sim, sim)
+        ts.last_sim = max(ts.last_sim, final_score)
+        if final_pred != "unknown":
+            ts.unknown_streak = 0
 
     ts.seen_frames += 1
     return ts.last_name, ts.last_sim
@@ -800,6 +901,12 @@ class PINCHApp:
         self.reg_path = os.path.join(RUN_DIR, "registry.json")
         self.load_registry()
 
+        # session classifier context built from enrollment embeddings (if available)
+        # Dict with keys: W (n_cls x D), b (n_cls,), names (list[str]), thr (n_cls,)
+        self.cls_ctx: Optional[Dict[str, np.ndarray]] = None
+        if self.registry is not None:
+            self.cls_ctx = self._build_session_classifier()
+
         # live enrollment (webcam only)
         self.enroll_name = ""
         self.enroll_name_edit = ""
@@ -876,6 +983,86 @@ class PINCHApp:
                     self.registry = r
             except Exception:
                 self.registry = None
+
+    def _build_session_classifier(self) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Build a tiny linear classifier on top of frozen embeddings using
+        stored enrollment embeddings in the registry.
+
+        This is deliberately lightweight: small dataset, few epochs.
+        """
+        if self.registry is None:
+            return None
+
+        X_list: List[np.ndarray] = []
+        y_list: List[int] = []
+        names: List[str] = []
+
+        for idx, m in enumerate(self.registry.markers):
+            embs = getattr(m, "enroll_embs", None)
+            if embs is None:
+                continue
+            arr = np.asarray(embs, dtype=np.float32)
+            if arr.ndim == 1:
+                arr = arr[None, :]
+            if arr.shape[0] == 0 or arr.shape[1] != EMBED_DIM:
+                continue
+            X_list.append(arr)
+            y_list.append(np.full((arr.shape[0],), idx, dtype=np.int64))
+            names.append(m.marker_id)
+
+        if not X_list or len(names) < 2:
+            return None
+
+        X = np.concatenate(X_list, axis=0)
+        y = np.concatenate(y_list, axis=0)
+
+        device = DEVICE
+        X_t = torch.from_numpy(X).to(device)
+        y_t = torch.from_numpy(y).to(device)
+
+        n_classes = len(names)
+        model = nn.Linear(EMBED_DIM, n_classes).to(device)
+        opt = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=1e-3)
+
+        # Simple training loop – dataset is tiny
+        epochs = 16
+        batch_size = 64
+        N = X_t.shape[0]
+
+        model.train()
+        for _ in range(epochs):
+            perm = torch.randperm(N, device=device)
+            X_shuf = X_t[perm]
+            y_shuf = y_t[perm]
+            for i in range(0, N, batch_size):
+                xb = X_shuf[i : i + batch_size]
+                yb = y_shuf[i : i + batch_size]
+                opt.zero_grad()
+                logits = model(xb)
+                loss = F.cross_entropy(logits, yb)
+                loss.backward()
+                opt.step()
+
+        model.eval()
+        with torch.no_grad():
+            logits = model(X_t)
+            probs = F.softmax(logits, dim=1).cpu().numpy()
+
+        # Per-class probability thresholds: low percentile over correct-class probs
+        thr = np.zeros((n_classes,), dtype=np.float32)
+        for k in range(n_classes):
+            mask = (y == k)
+            cls_probs = probs[mask, k]
+            if cls_probs.size == 0:
+                thr[k] = 1.1  # effectively never accept
+            else:
+                thr[k] = float(np.percentile(cls_probs, THRESH_PERCENTILE))
+
+        W = model.weight.detach().cpu().numpy().astype(np.float32)
+        b = model.bias.detach().cpu().numpy().astype(np.float32)
+
+        return {"W": W, "b": b, "names": names, "thr": thr}
 
     def save_registry(self):
         ensure_dir(RUN_DIR)
@@ -1076,7 +1263,7 @@ class PINCHApp:
 
             if self.enroll_step_idx >= len(ENROLL_STEPS):
                 embs = np.array(self.enroll_embs, dtype=np.float32)
-                protos, thr = build_profile_from_enrollment(self.enroll_name, embs)
+                protos, thr, mean, var, ll_thr = build_profile_from_enrollment(self.enroll_name, embs)
                 prof = MarkerProfile(
                     marker_id=self.enroll_name,
                     proto=protos,
@@ -1085,11 +1272,17 @@ class PINCHApp:
                     enroll_used=int(self.enroll_used),
                     source_mode="webcam",
                     source_path="",
+                    mean=mean,
+                    var=var,
+                    ll_thr=ll_thr,
+                    enroll_embs=embs.tolist(),
                 )
                 if self.registry is None:
                     self.registry = Registry()
                 self.registry.add_marker(prof)
                 self.save_registry()
+                # rebuild classifier now that registry has changed
+                self.cls_ctx = self._build_session_classifier()
                 self.screen = "main"
                 return
 
@@ -1404,7 +1597,7 @@ class PINCHApp:
 
             if self.enroll_step_idx >= len(ENROLL_STEPS):
                 embs = np.array(self.enroll_embs, dtype=np.float32)
-                protos, thr = build_profile_from_enrollment(self.enroll_name, embs)
+                protos, thr, mean, var, ll_thr = build_profile_from_enrollment(self.enroll_name, embs)
                 prof = MarkerProfile(
                     marker_id=self.enroll_name,
                     proto=protos,
@@ -1413,6 +1606,10 @@ class PINCHApp:
                     enroll_used=int(self.enroll_used),
                     source_mode="video",
                     source_path=self.demo_enroll_video,
+                    mean=mean,
+                    var=var,
+                    ll_thr=ll_thr,
+                    enroll_embs=embs.tolist(),
                 )
                 if self.registry is None:
                     self.registry = Registry()
@@ -1420,6 +1617,7 @@ class PINCHApp:
                 self.save_registry()
 
                 # go back to demo menu and reopen webcam so UI feels "live"
+                self.cls_ctx = self._build_session_classifier()
                 self.source.open_webcam(self.source.webcam_index)
                 self.screen = "demo_menu"
                 return
@@ -1799,7 +1997,7 @@ class PINCHApp:
                 self.event_rows.append([self.trial_id, self.trial_type, self.condition_str(), now_ms(), "track_new", tid, "", "", ""])
             self.states[tid].last_seen_frame = self.frame_idx
 
-            pred, sim = update_identity(self.states[tid], z, self.registry)
+            pred, sim = update_identity(self.states[tid], z, self.registry, self.cls_ctx)
             preds.append((tid, pred, float(sim), box))
 
         match_ms = (time.time() - t_match0) * 1000.0
