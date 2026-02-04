@@ -24,7 +24,7 @@ from typing import Dict, List, Tuple, Optional
 import cv2
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 import torch
 import torch.nn as nn
@@ -90,33 +90,45 @@ TRIAL_REENTRY_SEC = 18
 # ============================================================
 # UI THEME (studio)
 # ============================================================
-BG = (18, 22, 32)
-BG_TOP = (10, 14, 22)
-BG_GLOW_1 = (28, 62, 90)
-BG_GLOW_2 = (20, 80, 120)
-CARD = (26, 30, 40)
-CARD2 = (32, 38, 52)
-STROKE = (70, 82, 100)
-ACCENT = (64, 200, 255)
-ACCENT_HI = (90, 224, 255)
-ACCENT_SOFT = (80, 150, 210)
-OK = (72, 220, 150)
-WARN = (80, 95, 255)
-TEXT = (240, 242, 248)
-MUTED = (170, 178, 188)
-WHITE = (250, 250, 252)
-BTN_SECONDARY = (84, 94, 116)
-BTN_DISABLED = (60, 66, 78)
-INPUT_BG = (22, 26, 36)
-INPUT_ACTIVE = (30, 38, 58)
+# ============================================================
+# UI THEME (Cyber-HUD)
+# ============================================================
+# Palette
+C_BG = (12, 14, 20)        # Deep Navy (slightly lighter)
+C_BG_TOP = (8, 10, 14)
+C_CARD = (20, 24, 32)      # Card background
+C_CARD2 = (28, 32, 42)     # Slightly lighter card
+C_CARD_HOVER = (32, 38, 50)
+C_ACCENT = (100, 200, 255)  # Soft blue-cyan for better contrast
+C_ACCENT_BRIGHT = (180, 240, 255)  # High-visibility accent
+C_ACCENT_DIM = (60, 120, 160)
+C_PURPLE = (180, 100, 255) # Softer purple
+C_OK = (80, 255, 160)      # Neon Green
+C_WARN = (255, 200, 60)    # Warm Amber
+C_ERR = (255, 80, 100)     # Red
+C_TEXT = (245, 250, 255)   # Bright white
+C_TEXT_DIM = (150, 165, 185)  # More visible dim text
+C_STROKE = (50, 60, 80)
 
-FONT = cv2.FONT_HERSHEY_SIMPLEX
-FONT_TITLE = cv2.FONT_HERSHEY_DUPLEX
-UI_SCALE = 1.08
+# Fonts
+# Try to load Windows fonts, fallback to default
+try:
+    _FONT_MAIN = ImageFont.truetype("seguiemj.ttf", 16)
+    _FONT_LARGE = ImageFont.truetype("seguiemj.ttf", 26)
+    _FONT_TITLE = ImageFont.truetype("seguiemj.ttf", 36)
+    _FONT_SMALL = ImageFont.truetype("seguiemj.ttf", 13)
+    _FONT_MONO = ImageFont.truetype("consola.ttf", 15)
+except IOError:
+    # Fallback to default if system fonts missing
+    _FONT_MAIN = ImageFont.load_default()
+    _FONT_LARGE = ImageFont.load_default()
+    _FONT_TITLE = ImageFont.load_default()
+    _FONT_SMALL = ImageFont.load_default()
+    _FONT_MONO = ImageFont.load_default()
 
-TOPBAR_H = 76
-SIDEBAR_W = 360
-UI_PAD = 18
+UI_PAD = 20
+NAV_H = 80
+HUD_OPACITY = 220  # 0-255
 
 VIDEO_EXTS = (".mp4", ".avi", ".mov", ".m4v", ".MP4", ".AVI", ".MOV", ".M4V")
 
@@ -152,68 +164,105 @@ def lap_var(bgr: np.ndarray) -> float:
     g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     return cv2.Laplacian(g, cv2.CV_64F).var()
 
-def draw_text(img, s, x, y, scale=0.6, color=TEXT, thick=2, font=None, shadow=False):
-    f = font or FONT
-    scale = scale * UI_SCALE
+# ============================================================
+# PIL UI HELPERS
+# ============================================================
+def to_pil_color(c, alpha: int = 255) -> Tuple[int, int, int, int]:
+    # Input is (R, G, B) or (R, G, B, A) depending on context.
+    # The constants above are RGB (e.g. Cyan is 0, 240, 255).
+    # If already a 4-tuple, replace the alpha with the new value.
+    if len(c) == 4:
+        return (int(c[0]), int(c[1]), int(c[2]), int(alpha))
+    elif len(c) == 3:
+        return (int(c[0]), int(c[1]), int(c[2]), int(alpha))
+    else:
+        raise ValueError(f"Invalid color tuple length: {len(c)}")
+
+def draw_rect_filled(draw: ImageDraw.ImageDraw, rect, color, r=0, alpha=255):
+    x, y, w, h = rect
+    fill = to_pil_color(color, alpha)
+    if r > 0:
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=r, fill=fill)
+    else:
+        draw.rectangle((x, y, x + w, y + h), fill=fill)
+
+def draw_rect_stroke(draw: ImageDraw.ImageDraw, rect, color, width=1, r=0, alpha=255):
+    x, y, w, h = rect
+    outline = to_pil_color(color, alpha)
+    if r > 0:
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=r, outline=outline, width=width)
+    else:
+        draw.rectangle((x, y, x + w, y + h), outline=outline, width=width)
+
+def draw_text_pil(draw: ImageDraw.ImageDraw, pos, text, font=None, color=C_TEXT, align="left", shadow=False):
+    if font is None:
+        font = _FONT_MAIN
+    x, y = pos
+    fill = to_pil_color(color)
     if shadow:
-        cv2.putText(img, s, (x + 1, y + 1), f, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
-    cv2.putText(img, s, (x, y), f, scale, color, thick, cv2.LINE_AA)
+        # Subtle glow/shadow
+        shadow_col = (0, 0, 0, 180)
+        draw.text((x + 1, y + 1), text, font=font, fill=shadow_col, align=align)
+        draw.text((x + 1, y + 1), text, font=font, fill=shadow_col, align=align) # Double for strength
+    draw.text((x, y), text, font=font, fill=fill, align=align)
 
-def text_size(s, scale=0.6, thick=2, font=None):
-    f = font or FONT
-    return cv2.getTextSize(s, f, scale * UI_SCALE, thick)[0]
+def measure_text(text, font=None):
+    if font is None:
+        font = _FONT_MAIN
+    # getbbox returns (left, top, right, bottom)
+    bbox = font.getbbox(text)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-def alpha_rect(img, x1, y1, x2, y2, color, alpha=0.65):
-    overlay = img.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+def draw_glass_panel(draw: ImageDraw.ImageDraw, rect, color=C_CARD, alpha=240, border=C_STROKE):
+    # Main bg
+    draw_rect_filled(draw, rect, color, r=12, alpha=alpha)
+    # Subtle highlighting via gradient simulation or just stroke
+    draw_rect_stroke(draw, rect, border, width=1, r=12, alpha=100)
+    # Top shine line
+    x, y, w, h = rect
+    draw.line([(x + 12, y + 1), (x + w - 12, y + 1)], fill=to_pil_color(C_TEXT, 40), width=1)
 
-def rounded_rect(img, x1, y1, x2, y2, r=14, color=CARD, thickness=-1):
-    if thickness != -1:
-        cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, thickness)
-        cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, thickness)
-        cv2.circle(img, (x1 + r, y1 + r), r, color, thickness)
-        cv2.circle(img, (x2 - r, y1 + r), r, color, thickness)
-        cv2.circle(img, (x1 + r, y2 - r), r, color, thickness)
-        cv2.circle(img, (x2 - r, y2 - r), r, color, thickness)
-        return
-    cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, -1)
-    cv2.rectangle(img, (x1, y1 + r), (x2, y2 - r), color, -1)
-    cv2.circle(img, (x1 + r, y1 + r), r, color, -1)
-    cv2.circle(img, (x2 - r, y1 + r), r, color, -1)
-    cv2.circle(img, (x1 + r, y2 - r), r, color, -1)
-    cv2.circle(img, (x2 - r, y2 - r), r, color, -1)
+def draw_sci_box(draw: ImageDraw.ImageDraw, rect, color=C_ACCENT, alpha=255):
+    # Angular brackets for sci-fi look
+    x, y, w, h = rect
+    c = to_pil_color(color, alpha)
+    L = 10
+    t = 2
+    # Corners
+    pts = [
+        [(x, y + L), (x, y), (x + L, y)], # TL
+        [(x + w - L, y), (x + w, y), (x + w, y + L)], # TR
+        [(x + w, y + h - L), (x + w, y + h), (x + w - L, y + h)], # BR
+        [(x + L, y + h), (x, y + h), (x, y + h - L)] # BL
+    ]
+    for poly in pts:
+        draw.line(poly, fill=c, width=t)
 
-def shadow_card(img, x1, y1, x2, y2, r=16, shadow=10):
-    alpha_rect(img, x1 + shadow, y1 + shadow, x2 + shadow, y2 + shadow, (0, 0, 0), alpha=0.28)
-    rounded_rect(img, x1, y1, x2, y2, r=r, color=CARD, thickness=-1)
-    rounded_rect(img, x1, y1, x2, y2, r=r, color=STROKE, thickness=2)
-    cv2.line(img, (x1 + r, y1 + 2), (x2 - r, y1 + 2), tint(CARD, 0.18), 1)
-
-_BG_CACHE = None
-_BG_CACHE_SHAPE = None
-
-def gradient_bg(canvas):
-    global _BG_CACHE, _BG_CACHE_SHAPE
-    h, w = canvas.shape[:2]
-    if _BG_CACHE is None or _BG_CACHE_SHAPE != (h, w):
-        top = np.array(BG_TOP, dtype=np.float32)
-        bot = np.array(BG, dtype=np.float32)
-        grad = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
-        col = (1 - grad) * top + grad * bot
-        bg = np.repeat(col[:, None, :], w, axis=1).astype(np.uint8)
-
-        glow = bg.copy()
-        cv2.circle(glow, (int(w * 0.18), int(h * 0.08)), int(h * 0.65), BG_GLOW_1, -1)
-        cv2.circle(glow, (int(w * 0.88), int(h * 0.12)), int(h * 0.55), BG_GLOW_2, -1)
-        cv2.addWeighted(glow, 0.18, bg, 0.82, 0, bg)
-
-        noise = np.random.randint(0, 6, size=(h, w, 1), dtype=np.uint8)
-        bg = np.clip(bg + noise, 0, 255).astype(np.uint8)
-
-        _BG_CACHE = bg
-        _BG_CACHE_SHAPE = (h, w)
-    canvas[:] = _BG_CACHE
+_BG_IMAGE = None
+def get_bg(w, h):
+    # Generate a nice radial gradient background
+    global _BG_IMAGE
+    if _BG_IMAGE is None or _BG_IMAGE.size != (w, h):
+        # Create gradient
+        arr = np.zeros((h, w, 3), dtype=np.uint8)
+        # Deep radial gradient manually
+        # Center roughly
+        cx, cy = w // 2, h // 2
+        # Grid ?
+        # Linear vertical gradient
+        y = np.linspace(0, 1, h)[:, None]
+        top = np.array(C_BG_TOP)
+        bot = np.array(C_BG)
+        bg = (1 - y) * top + y * bot
+        bg = bg[:, None, :]  # (h, 1, 3)
+        bg = np.broadcast_to(bg, (h, w, 3)).astype(np.uint8)
+        
+        # Add some noise
+        noise = np.random.randint(0, 5, (h, w, 3), dtype=np.uint8)
+        bg = cv2.add(bg, noise)
+        
+        _BG_IMAGE = Image.fromarray(bg)
+    return _BG_IMAGE.copy()
 
 def point_in(x, y, r):
     rx, ry, rw, rh = r
@@ -481,27 +530,54 @@ class VideoSource:
 # ============================================================
 # CANVAS COMPOSITION
 # ============================================================
-def compose_canvas(frame_bgr: np.ndarray) -> Tuple[np.ndarray, float, int, int, Tuple[int, int, int, int]]:
-    canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
-    gradient_bg(canvas)
-
-    left_w = SIDEBAR_W
-    pad = UI_PAD
-    vx1, vy1 = left_w + pad, TOPBAR_H + 16
-    vx2, vy2 = CANVAS_W - pad, CANVAS_H - pad
-    shadow_card(canvas, vx1, vy1, vx2, vy2, r=18, shadow=10)
-
+# ============================================================
+# CANVAS COMPOSITION
+# ============================================================
+def compose_canvas_pil(frame_bgr: np.ndarray) -> Tuple[Image.Image, float, int, int, Tuple[int, int, int, int]]:
+    # Create base
+    canvas = get_bg(CANVAS_W, CANVAS_H).convert("RGBA")
+    
+    # We want a full-screen-ish experience.
+    # Let's target the video to be central, slightly elevated.
+    # Sci-fi HUD limits:
+    # Sidebar / HUD limits are virtual.
+    
+    # Calculate video scale to fit nicely within standard margins
+    # Leave room for Top Bar (80px) and Bottom Dock (100px)
+    margin_top = NAV_H + 10
+    margin_bot = 100
+    margin_sides = 20
+    
+    avail_w = CANVAS_W - 2 * margin_sides
+    avail_h = CANVAS_H - margin_top - margin_bot
+    
     fh, fw = frame_bgr.shape[:2]
-    vw, vh = (vx2 - vx1) - 16, (vy2 - vy1) - 16
-    s = min(vw / max(fw, 1), vh / max(fh, 1))
+    s = min(avail_w / max(fw, 1), avail_h / max(fh, 1))
     s = max(min(s, 1.0), 1e-6)
     rw, rh = int(fw * s), int(fh * s)
-    resized = cv2.resize(frame_bgr, (rw, rh), interpolation=cv2.INTER_AREA)
+    
+    # Resize frame
+    # Convert BGR to RGB
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    frame_pil = Image.fromarray(frame_rgb).resize((rw, rh), resample=Image.Resampling.BILINEAR)
+    
+    # Center it
+    offx = (CANVAS_W - rw) // 2
+    offy = margin_top + (avail_h - rh) // 2
+    
+    # Draw simple "frame" or backing behind video
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    
+    # Video backing/glow
+    draw_rect_filled(draw, (offx - 2, offy - 2, rw + 4, rh + 4), C_BG, r=0, alpha=100)
+    draw_rect_stroke(draw, (offx - 2, offy - 2, rw + 4, rh + 4), C_ACCENT_DIM, width=1)
+    
+    # Decoration: Corner brackets on the video frame
+    draw_sci_box(draw, (offx - 10, offy - 10, rw + 20, rh + 20), C_ACCENT_DIM, alpha=150)
 
-    offx = vx1 + 8 + (vw - rw) // 2
-    offy = vy1 + 8 + (vh - rh) // 2
-    canvas[offy:offy + rh, offx:offx + rw] = resized
-
+    # Paste video
+    canvas.paste(frame_pil, (offx, offy))
+    
     view_rect = (offx, offy, rw, rh)
     return canvas, s, offx, offy, view_rect
 
@@ -806,6 +882,9 @@ def save_confusion_matrix(classes: List[str], cm: np.ndarray, out_path: str):
 # ============================================================
 # UI PRIMITIVES
 # ============================================================
+# ============================================================
+# UI PRIMITIVES
+# ============================================================
 @dataclass
 class Button:
     text: str
@@ -815,64 +894,78 @@ class Button:
     toggled: bool = False
     tag: str = ""
 
-def draw_button(canvas, b: Button, primary=True):
+def draw_button_pil(draw: ImageDraw.ImageDraw, b: Button, primary=True):
     x, y, w, h = b.rect
-    base = ACCENT if primary else BTN_SECONDARY
-
+    
     if not b.enabled:
-        col = BTN_DISABLED
-        stroke = shade(col, 0.25)
-        txt = MUTED
+        fill_col = to_pil_color(C_CARD, 100)
+        stroke_col = to_pil_color(C_STROKE, 80)
+        text_col = C_TEXT_DIM
     else:
         if b.toggled:
-            col = mix_color(ACCENT, OK, 0.35)
+            # Active/Toggled state -> Bright fill
+            base = C_OK if primary else C_ACCENT_BRIGHT
+            fill_col = to_pil_color(base, 200)
+            stroke_col = to_pil_color(base, 255)
+            text_col = (20, 25, 35)  # Dark text on bright button
         else:
-            col = base
-        if b.hover:
-            col = tint(col, 0.12)
-        stroke = tint(col, 0.18)
-        txt = WHITE
+            # Use same fill for all buttons regardless of primary
+            if b.hover:
+                fill_col = to_pil_color(C_CARD_HOVER, 240)
+                stroke_col = to_pil_color(C_ACCENT_BRIGHT, 200)
+                text_col = C_TEXT
+            else:
+                fill_col = to_pil_color(C_CARD, 220)
+                stroke_col = to_pil_color(C_STROKE, 180)
+                text_col = C_TEXT
+    
+    # Modern rounded rectangle
+    draw.rounded_rectangle((x, y, x+w, y+h), radius=10, fill=fill_col, outline=stroke_col, width=2 if b.hover else 1)
+    
+    # Center text
+    tw, th = measure_text(b.text, font=_FONT_MAIN)
+    tx = x + (w - tw) // 2
+    ty = y + (h - th) // 2
+    
+    draw_text_pil(draw, (tx, ty), b.text, font=_FONT_MAIN, color=text_col)
 
-    alpha_rect(canvas, x + 6, y + 8, x + w + 6, y + h + 8, (0, 0, 0), alpha=0.28)
-    rounded_rect(canvas, x, y, x + w, y + h, r=16, color=col, thickness=-1)
-    alpha_rect(canvas, x + 2, y + 2, x + w - 2, y + h // 2, tint(col, 0.2), alpha=0.25)
-    rounded_rect(canvas, x, y, x + w, y + h, r=16, color=stroke, thickness=2)
-
-    ts = text_size(b.text, scale=0.6, thick=2)
-    tx = x + (w - ts[0]) // 2
-    ty = y + (h + ts[1]) // 2
-    draw_text(canvas, b.text, tx, ty, scale=0.6, color=txt, thick=2)
-
-def draw_input(canvas, rect, label, value, placeholder="", active=False, hint=""):
+def draw_input_pil(draw: ImageDraw.ImageDraw, rect, label, value, placeholder="", active=False, hint=""):
     x, y, w, h = rect
-    draw_text(canvas, label, x, y - 10, scale=0.48, color=MUTED, thick=2)
-    bg = INPUT_ACTIVE if active else INPUT_BG
-    border = ACCENT if active else STROKE
-    rounded_rect(canvas, x, y, x + w, y + h, r=12, color=bg, thickness=-1)
-    rounded_rect(canvas, x, y, x + w, y + h, r=12, color=border, thickness=2)
-
-    display = value if value else placeholder
-    txt_col = TEXT if value else MUTED
-    ts = text_size(display, scale=0.54, thick=2)
-    ty = y + (h + ts[1]) // 2
-    draw_text(canvas, display, x + 12, ty, scale=0.54, color=txt_col, thick=2)
-
+    
+    # Label
+    draw_text_pil(draw, (x, y - 18), label, font=_FONT_SMALL, color=C_TEXT_DIM)
+    
+    # Box
+    bg_col = C_CARD_HOVER if active else C_CARD
+    border = C_ACCENT if active else C_STROKE
+    draw_rect_filled(draw, (x, y, w, h), bg_col, r=6)
+    draw_rect_stroke(draw, (x, y, w, h), border, r=6, width=1 if not active else 2)
+    
+    # Text
+    text_to_show = value if value else placeholder
+    col = C_TEXT if value else C_TEXT_DIM
+    
+    # Clip text if too long?
+    draw_text_pil(draw, (x + 10, y + 10), text_to_show, _FONT_MONO, color=col)
+    
+    # Caret
     if active and int(time.time() * 2) % 2 == 0:
-        caret_x = min(x + w - 12, x + 12 + ts[0] + 2)
-        cv2.line(canvas, (caret_x, y + 10), (caret_x, y + h - 10), ACCENT_HI, 1)
+        tw, th = measure_text(text_to_show, _FONT_MONO)
+        cx = x + 10 + tw + 2
+        draw.line([(cx, y + 10), (cx, y + h - 10)], fill=to_pil_color(C_ACCENT), width=1)
 
     if hint:
-        draw_text(canvas, hint, x, y + h + 18, scale=0.46, color=MUTED, thick=2)
+        draw_text_pil(draw, (x, y + h + 6), hint, _FONT_SMALL, color=C_TEXT_DIM)
 
-def pill(canvas, x, y, text, color, text_color=WHITE):
-    ts = text_size(text, scale=0.5, thick=2)
-    w = ts[0] + 18
-    h = 28
-    base = tint(color, 0.08)
-    rounded_rect(canvas, x, y, x + w, y + h, r=14, color=base, thickness=-1)
-    rounded_rect(canvas, x, y, x + w, y + h, r=14, color=shade(base, 0.2), thickness=2)
-    draw_text(canvas, text, x + 9, y + 20, scale=0.5, color=text_color, thick=2)
-    return x + w + 8
+def pill_pil(draw: ImageDraw.ImageDraw, x, y, text, color, text_color=C_TEXT):
+    tw, th = measure_text(text, _FONT_SMALL)
+    w = tw + 20
+    h = 24
+    
+    # Capsule shape
+    draw.rounded_rectangle((x, y, x + w, y + h), radius=12, fill=to_pil_color(color, 60), outline=to_pil_color(color, 150))
+    draw_text_pil(draw, (x + 10, y + 4), text, _FONT_SMALL, color=text_color)
+    return x + w + 10
 
 # ============================================================
 # APP
@@ -884,25 +977,25 @@ class PINCHApp:
         self.embedder = embedder
 
         self.running = True
-        self.screen = "main"  # main, live_enroll, live_trial_setup, live_trial_run, demo_menu, demo_enroll_setup, demo_enroll_run, demo_trial_setup, demo_trial_run
+        self.screen = "main"
 
         self.mouse_x = 0
         self.mouse_y = 0
         self.clicked = False
         self.focus_field = ""
 
-        # global video source (switch per mode)
+        # global video source
         self.source = VideoSource()
         if not self.source.open_webcam(WEBCAM_INDEX):
-            raise RuntimeError("Failed to open webcam.")
+            # Try to open anyway, might fail later
+            pass
 
         # registry
         self.registry: Optional[Registry] = None
         self.reg_path = os.path.join(RUN_DIR, "registry.json")
         self.load_registry()
 
-        # session classifier context built from enrollment embeddings (if available)
-        # Dict with keys: W (n_cls x D), b (n_cls,), names (list[str]), thr (n_cls,)
+        # session classifier context
         self.cls_ctx: Optional[Dict[str, np.ndarray]] = None
         if self.registry is not None:
             self.cls_ctx = self._build_session_classifier()
@@ -916,6 +1009,8 @@ class PINCHApp:
         self.enroll_embs: List[np.ndarray] = []
         self.enroll_frames = 0
         self.enroll_used = 0
+        self.enroll_countdown = 0  # Countdown seconds remaining (0 = not counting)
+        self.enroll_countdown_t0 = 0.0  # When countdown started
 
         # demo enrollment setup
         self.demo_enroll_name = ""
@@ -953,7 +1048,8 @@ class PINCHApp:
         self._cm = None
         self._gt_total = 0
         self._gt_correct = 0
-
+        
+        # Init window
         cv2.namedWindow(self.win, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.win, CANVAS_W, CANVAS_H)
         cv2.setMouseCallback(self.win, self.on_mouse)
@@ -985,12 +1081,6 @@ class PINCHApp:
                 self.registry = None
 
     def _build_session_classifier(self) -> Optional[Dict[str, np.ndarray]]:
-        """
-        Build a tiny linear classifier on top of frozen embeddings using
-        stored enrollment embeddings in the registry.
-
-        This is deliberately lightweight: small dataset, few epochs.
-        """
         if self.registry is None:
             return None
 
@@ -1025,7 +1115,6 @@ class PINCHApp:
         model = nn.Linear(EMBED_DIM, n_classes).to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=1e-3)
 
-        # Simple training loop – dataset is tiny
         epochs = 16
         batch_size = 64
         N = X_t.shape[0]
@@ -1049,13 +1138,12 @@ class PINCHApp:
             logits = model(X_t)
             probs = F.softmax(logits, dim=1).cpu().numpy()
 
-        # Per-class probability thresholds: low percentile over correct-class probs
         thr = np.zeros((n_classes,), dtype=np.float32)
         for k in range(n_classes):
             mask = (y == k)
             cls_probs = probs[mask, k]
             if cls_probs.size == 0:
-                thr[k] = 1.1  # effectively never accept
+                thr[k] = 1.1
             else:
                 thr[k] = float(np.percentile(cls_probs, THRESH_PERCENTILE))
 
@@ -1076,29 +1164,32 @@ class PINCHApp:
         l = "bright" if self.condition_bright else "dim"
         return f"{d}/{l}"
 
-    def draw_topbar(self, canvas, title, subtitle=""):
-        alpha_rect(canvas, 0, 0, CANVAS_W, TOPBAR_H, (0, 0, 0), alpha=0.35)
-        cv2.line(canvas, (0, TOPBAR_H), (CANVAS_W, TOPBAR_H), STROKE, 1)
-        cv2.line(canvas, (18, 14), (18, TOPBAR_H - 14), ACCENT, 3)
-        draw_text(canvas, title, 34, 36, scale=0.92, color=ACCENT_HI, thick=2, font=FONT_TITLE)
+    def draw_nav(self, draw: ImageDraw.ImageDraw, title, subtitle=""):
+        # Glass panel top
+        draw_glass_panel(draw, (-10, -10, CANVAS_W + 20, NAV_H + 10), color=C_BG_TOP, alpha=240, border=C_STROKE)
+        
+        # Logo mark
+        draw_rect_filled(draw, (UI_PAD, 20, 6, NAV_H - 40), C_ACCENT)
+        
+        draw_text_pil(draw, (UI_PAD + 20, 18), title.upper(), font=_FONT_TITLE, color=C_TEXT)
         if subtitle:
-            draw_text(canvas, subtitle, 34, 62, scale=0.5, color=MUTED, thick=2)
+            draw_text_pil(draw, (UI_PAD + 20, 52), subtitle, font=_FONT_SMALL, color=C_TEXT_DIM)
+            
+        # Right side info
+        info_x = CANVAS_W - 300
+        pill_pil(draw, info_x, 26, self.source.describe(), C_CARD2)
+        
+        reg_txt = "Registry: none" if self.registry is None else f"Registry: {len(self.registry.markers)}"
+        reg_col = C_ERR if self.registry is None else C_OK
+        pill_pil(draw, info_x + 160, 26, reg_txt, to_pil_color(C_BG, 100), text_color=reg_col)
 
-        x = CANVAS_W - 430
-        x = pill(canvas, x, 22, self.source.describe(), CARD2)
-        if self.registry is None:
-            pill(canvas, x, 22, "Registry: none", (70, 40, 40))
-        else:
-            pill(canvas, x, 22, f"Registry: {len(self.registry.markers)}", (30, 60, 30))
-
-    def draw_sidebar_card(self, canvas, title, lines: List[str], y, h):
-        x1, y1, x2, y2 = 18, y, 18 + 324, y + h
-        shadow_card(canvas, x1, y1, x2, y2, r=16, shadow=8)
-        draw_text(canvas, title, x1 + 14, y1 + 28, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
-        yy = y1 + 54
-        for s in lines:
-            draw_text(canvas, s, x1 + 14, yy, scale=0.52, color=MUTED, thick=2)
-            yy += 22
+    def draw_hud_panel(self, draw: ImageDraw.ImageDraw, title, lines: List[str], x, y, w, h):
+        draw_glass_panel(draw, (x, y, w, h), color=C_BG, alpha=HUD_OPACITY)
+        draw_text_pil(draw, (x + 15, y + 15), title, font=_FONT_MAIN, color=C_ACCENT)
+        curr_y = y + 45
+        for line in lines:
+            draw_text_pil(draw, (x + 15, curr_y), line, font=_FONT_SMALL, color=C_TEXT_DIM)
+            curr_y += 20
 
     def handle_text_input(self, key, buf: str, max_len=80) -> str:
         if key in (8, 127):
@@ -1115,29 +1206,39 @@ class PINCHApp:
         return buf
 
     # ---------------- Screens ----------------
-    def main_screen(self, canvas) -> None:
-        self.draw_topbar(canvas, "PINCHReader Live", "Live uses webcam. Demo uses video files.")
+    def main_screen(self, draw: ImageDraw.ImageDraw) -> None:
+        self.draw_nav(draw, "PINCHReader", "Let's Work Together")
 
-        reg_line = "Registry not found. Run enrollment first." if self.registry is None else "Markers: " + ", ".join(self.registry.names())
-        self.draw_sidebar_card(canvas, "Status", [reg_line], y=92, h=90)
+        # Center launcher
+        cx, cy = CANVAS_W // 2, CANVAS_H // 2
+        bw, bh = 300, 52
+        gap = 12
+        total_h = 5 * (bh + gap)
+        start_y = cy - total_h // 2 + 40
+
+        # Draw a backing panel for the menu
+        menu_w = bw + 60
+        menu_h = total_h + 60
+        draw_glass_panel(draw, (cx - menu_w//2, start_y - 30, menu_w, menu_h), alpha=HUD_OPACITY)
 
         btns = []
-        bx, by, bw, bh, gap = 28, 205, 300, 54, 12
-
         def add(text, tag, enabled=True):
-            b = Button(text=text, rect=(bx, by + len(btns) * (bh + gap), bw, bh), enabled=enabled, tag=tag)
+            idx = len(btns)
+            bx = cx - bw // 2
+            by = start_y + idx * (bh + gap)
+            b = Button(text=text, rect=(bx, by, bw, bh), enabled=enabled, tag=tag)
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
             btns.append(b)
 
         add("Live Enrollment", "live_enroll", enabled=True)
         add("Live Trials", "live_trials", enabled=(self.registry is not None))
         add("Demo Mode", "demo", enabled=True)
-        add("Reload registry", "reload", enabled=True)
+        add("Reload Registry", "reload", enabled=True)
         add("Exit", "exit", enabled=True)
 
         for b in btns:
             primary = b.tag in ("live_enroll", "live_trials", "demo")
-            draw_button(canvas, b, primary=primary)
+            draw_button_pil(draw, b, primary=primary)
 
         clicked = self.consume_click()
         if clicked:
@@ -1167,32 +1268,19 @@ class PINCHApp:
         self.enroll_embs = []
         self.enroll_frames = 0
         self.enroll_used = 0
-        # force webcam
         self.source.open_webcam(self.source.webcam_index)
 
-    def live_enroll_screen(self, frame_bgr, canvas, s, offx, offy, key):
-        self.draw_topbar(canvas, "Live Enrollment", "Name the marker, press Enter, then follow the prompts.")
+    def live_enroll_screen(self, frame_bgr, draw: ImageDraw.ImageDraw, s, offx, offy, key):
+        self.draw_nav(draw, "Enrollment", "Follow the prompts to register a new marker.")
 
-        # name card
-        shadow_card(canvas, 18, 92, 18 + 324, 92 + 150, r=16, shadow=8)
-        name_value = self.enroll_name_edit if self.enroll_name == "" else self.enroll_name
-        name_rect = (34, 140, 300, 46)
-        draw_input(
-            canvas,
-            name_rect,
-            "Marker name",
-            name_value,
-            placeholder="Type a name and press Enter",
-            active=(self.focus_field == "live_enroll_name" and self.enroll_name == ""),
-            hint="Enter locks the name for this run.",
-        )
-
-        # handle typing until name confirmed
-        if self.enroll_name == "" and key != -1 and self.focus_field == "live_enroll_name":
-            if key in (13, 10):
-                nm = self.enroll_name_edit.strip()
-                self.enroll_name = nm if nm else f"marker_{now_ms()}"
-                self.enroll_name_edit = ""
+        # Handle countdown state
+        if self.enroll_countdown > 0:
+            elapsed = time.time() - self.enroll_countdown_t0
+            remaining = self.enroll_countdown - int(elapsed)
+            
+            if remaining <= 0:
+                # Countdown finished, start actual enrollment
+                self.enroll_countdown = 0
                 self.enroll_step_idx = 0
                 self.enroll_step_t0 = time.time()
                 self.enroll_t0 = time.time()
@@ -1200,25 +1288,92 @@ class PINCHApp:
                 self.enroll_frames = 0
                 self.enroll_used = 0
             else:
-                self.enroll_name_edit = self.handle_text_input(key, self.enroll_name_edit, max_len=24)
-
-        # cancel button
-        cancel = Button("Cancel", (28, CANVAS_H - 72, 300, 52), tag="cancel")
-        cancel.hover = point_in(self.mouse_x, self.mouse_y, cancel.rect)
-        draw_button(canvas, cancel, primary=False)
-
-        clicked = self.consume_click()
-        if clicked:
-            if point_in(self.mouse_x, self.mouse_y, name_rect) and self.enroll_name == "":
-                self.focus_field = "live_enroll_name"
-            elif cancel.hover:
-                self.screen = "main"
+                # Draw countdown animation
+                cx, cy = CANVAS_W // 2, CANVAS_H // 2
+                
+                # Large countdown number
+                count_text = str(remaining)
+                try:
+                    count_font = ImageFont.truetype("seguiemj.ttf", 120)
+                except IOError:
+                    count_font = _FONT_TITLE
+                
+                tw, th = measure_text(count_text, count_font)
+                
+                # Pulsing effect based on fractional second
+                frac = elapsed - int(elapsed)
+                pulse = 1.0 + 0.15 * (1.0 - frac)  # Slight pulse
+                
+                # Draw backing circle
+                radius = 100
+                draw.ellipse(
+                    (cx - radius, cy - radius, cx + radius, cy + radius),
+                    fill=to_pil_color(C_CARD, 200),
+                    outline=to_pil_color(C_ACCENT_BRIGHT, 255),
+                    width=4
+                )
+                
+                # Draw countdown number
+                draw.text((cx - tw//2, cy - th//2 - 10), count_text, font=count_font, fill=to_pil_color(C_ACCENT_BRIGHT))
+                
+                # "Get Ready" text
+                ready_text = "Get Ready..."
+                rtw, rth = measure_text(ready_text, _FONT_LARGE)
+                draw_text_pil(draw, (cx - rtw//2, cy + radius + 30), ready_text, _FONT_LARGE, C_TEXT)
+                
+                # Marker name below
+                name_text = f"Registering: {self.enroll_name}"
+                ntw, nth = measure_text(name_text, _FONT_MAIN)
+                draw_text_pil(draw, (cx - ntw//2, cy + radius + 70), name_text, _FONT_MAIN, C_TEXT_DIM)
                 return
 
+        # If name not set, show name dialog
         if self.enroll_name == "":
+            cx, cy = CANVAS_W // 2, CANVAS_H // 2
+            w, h = 400, 200
+            x, y = cx - w//2, cy - h//2
+            
+            draw_glass_panel(draw, (x, y, w, h), alpha=230)
+            draw_text_pil(draw, (x + 20, y + 20), "New Marker", _FONT_LARGE, C_ACCENT)
+            
+            name_value = self.enroll_name_edit
+            name_rect = (x + 20, y + 70, w - 40, 48)
+            draw_input_pil(
+                draw,
+                name_rect,
+                "Marker Name",
+                name_value,
+                placeholder="Enter name...",
+                active=(self.focus_field == "live_enroll_name"),
+                hint="Press Enter to start"
+            )
+            
+            # Cancel
+            cancel = Button("Cancel", (x + 20, y + 140, 100, 40), tag="cancel")
+            cancel.hover = point_in(self.mouse_x, self.mouse_y, cancel.rect)
+            draw_button_pil(draw, cancel, primary=False)
+            
+            if key != -1 and self.focus_field == "live_enroll_name":
+                if key in (13, 10): # Enter
+                    nm = self.enroll_name_edit.strip()
+                    self.enroll_name = nm if nm else f"marker_{now_ms()}"
+                    self.enroll_name_edit = ""
+                    # Start countdown instead of immediate enrollment
+                    self.enroll_countdown = 5
+                    self.enroll_countdown_t0 = time.time()
+                else:
+                    self.enroll_name_edit = self.handle_text_input(key, self.enroll_name_edit, max_len=24)
+            
+            clicked = self.consume_click()
+            if clicked:
+                if point_in(self.mouse_x, self.mouse_y, name_rect):
+                    self.focus_field = "live_enroll_name"
+                elif cancel.hover:
+                    self.screen = "main"
             return
 
-        # steps
+        # Running Enrollment
+        # Logic...
         step_text, step_dur = ENROLL_STEPS[self.enroll_step_idx]
         elapsed_step = time.time() - self.enroll_step_t0
 
@@ -1233,14 +1388,14 @@ class PINCHApp:
             boxes = res[0].boxes.data.cpu().numpy()
             boxes = boxes[np.argsort(-boxes[:, 4])]
             x1, y1, x2, y2, conf, cls = boxes[0].tolist()
-
+            
+            # ... clamping logic same ...
             bw = x2 - x1
             bh = y2 - y1
             x1p = x1 - BOX_PAD_FRAC * bw
             y1p = y1 - BOX_PAD_FRAC * bh
             x2p = x2 + BOX_PAD_FRAC * bw
             y2p = y2 + BOX_PAD_FRAC * bh
-
             b = clamp_box(x1p, y1p, x2p, y2p, W, H)
             if b is not None:
                 x1i, y1i, x2i, y2i = b
@@ -1260,8 +1415,8 @@ class PINCHApp:
         if elapsed_step >= step_dur:
             self.enroll_step_idx += 1
             self.enroll_step_t0 = time.time()
-
             if self.enroll_step_idx >= len(ENROLL_STEPS):
+                # Finish
                 embs = np.array(self.enroll_embs, dtype=np.float32)
                 protos, thr, mean, var, ll_thr = build_profile_from_enrollment(self.enroll_name, embs)
                 prof = MarkerProfile(
@@ -1281,44 +1436,48 @@ class PINCHApp:
                     self.registry = Registry()
                 self.registry.add_marker(prof)
                 self.save_registry()
-                # rebuild classifier now that registry has changed
                 self.cls_ctx = self._build_session_classifier()
                 self.screen = "main"
                 return
 
-        # step card
-        self.draw_sidebar_card(
-            canvas,
-            "Enrollment",
-            [
-                f"Name: {self.enroll_name}",
-                f"Step: {step_text}",
-                f"Embeddings used: {self.enroll_used}",
-            ],
-            y=235,
-            h=150,
-        )
+        # Draw HUD overlays
+        # 1. Step Instructions - Big floating text
+        draw_glass_panel(draw, (20, 100, 300, 160))
+        draw_text_pil(draw, (40, 120), "CURRENT ACTION", _FONT_SMALL, C_ACCENT)
+        draw_text_pil(draw, (40, 150), step_text, _FONT_TITLE, C_TEXT)
+        draw_text_pil(draw, (40, 210), f"Used: {self.enroll_used} samples", _FONT_MAIN, C_TEXT_DIM)
 
-        # progress bar
+        # 2. Progress Line
         total = sum(d for _, d in ENROLL_STEPS)
         elapsed_total = time.time() - self.enroll_t0
         prog = min(1.0, elapsed_total / max(total, 1e-6))
-        x1, y1, x2, y2 = 28, 395, 28 + 300, 417
-        rounded_rect(canvas, x1, y1, x2, y2, r=12, color=CARD2, thickness=-1)
-        fill = int((x2 - x1) * prog)
-        if fill > 0:
-            rounded_rect(canvas, x1, y1, x1 + fill, y2, r=12, color=ACCENT, thickness=-1)
-        draw_text(canvas, f"{int(elapsed_total)}/{int(total)}s", 28 + 210, 389, scale=0.50, color=TEXT, thick=2)
-
-        # draw box
+        
+        bar_x, bar_y = 340, 100
+        bar_w = CANVAS_W - 340 - 20
+        # draw track
+        draw.line([(bar_x, bar_y), (bar_x + bar_w, bar_y)], fill=to_pil_color(C_STROKE), width=4)
+        # draw fill
+        if prog > 0:
+            draw.line([(bar_x, bar_y), (bar_x + int(bar_w * prog), bar_y)], fill=to_pil_color(C_ACCENT), width=4)
+        
+        # 3. Detection box override
         if best_box is not None:
             x1i, y1i, x2i, y2i = best_box
             cx1 = int(offx + x1i * s)
             cy1 = int(offy + y1i * s)
             cx2 = int(offx + x2i * s)
             cy2 = int(offy + y2i * s)
-            cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), OK, 2)
+            draw_sci_box(draw, (cx1, cy1, cx2 - cx1, cy2 - cy1), C_OK, alpha=255)
+            
+        # Cancel button bottom
+        cancel = Button("Cancel", (20, CANVAS_H - 80, 150, 48), tag="cancel")
+        cancel.hover = point_in(self.mouse_x, self.mouse_y, cancel.rect)
+        draw_button_pil(draw, cancel, primary=False)
+        
+        if self.consume_click() and cancel.hover:
+            self.screen = "main"
 
+    # ---------------- LIVE TRIALS (webcam) ----------------
     # ---------------- LIVE TRIALS (webcam) ----------------
     def start_live_trial_setup(self):
         self.screen = "live_trial_setup"
@@ -1326,105 +1485,116 @@ class PINCHApp:
         self.condition_near = True
         self.condition_bright = True
         self.gt_enabled = True
-        # force webcam
         self.source.open_webcam(self.source.webcam_index)
 
-    def live_trial_setup_screen(self, canvas):
-        self.draw_topbar(canvas, "Live Trials", "Choose type and condition, then start the live run.")
+    def live_trial_setup_screen(self, draw: ImageDraw.ImageDraw):
+        self.draw_nav(draw, "Live Trials", "Configure conditions and start tracking.")
 
         if self.registry is None:
-            self.draw_sidebar_card(canvas, "Error", ["No registry loaded.", "Run enrollment first."], y=92, h=90)
-            back = Button("Back", (28, CANVAS_H - 72, 300, 52), tag="back")
+            cx, cy = CANVAS_W // 2, CANVAS_H // 2
+            draw_glass_panel(draw, (cx - 200, cy - 60, 400, 120))
+            draw_text_pil(draw, (cx - 180, cy - 30), "NO REGISTRY LOADED", _FONT_TITLE, C_ERR)
+            draw_text_pil(draw, (cx - 180, cy + 10), "Please run enrollment first.", _FONT_MAIN, C_TEXT)
+            
+            back = Button("Back", (20, CANVAS_H - 80, 120, 48), tag="back")
             back.hover = point_in(self.mouse_x, self.mouse_y, back.rect)
-            draw_button(canvas, back, primary=False)
+            draw_button_pil(draw, back, primary=False)
+            
             if self.consume_click() and back.hover:
                 self.screen = "main"
             return
 
-        shadow_card(canvas, 18, 92, 18 + 324, 92 + 290, r=16, shadow=8)
-        draw_text(canvas, "Trial type", 34, 126, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
-
-        t_swipe = Button("Swipe", (34, 148, 300, 48), tag="t_swipe")
-        t_int = Button("Interference", (34, 206, 300, 48), tag="t_int")
-        t_re = Button("Re-entry", (34, 264, 300, 48), tag="t_re")
-
+        # Grid Layout
+        # Left Panel: Trial Type
+        # Right Panel: Condition
+        
+        panel_y = 100
+        panel_h = 320
+        col1_x = 40
+        col2_x = 400
+        
+        # Trial Type
+        self.draw_hud_panel(draw, "Trial Type", ["Select the task."], col1_x, panel_y, 320, panel_h)
+        
+        t_swipe = Button("Swipe", (col1_x + 20, panel_y + 80, 280, 50), tag="t_swipe")
+        t_int = Button("Interference", (col1_x + 20, panel_y + 145, 280, 50), tag="t_int")
+        t_re = Button("Re-entry", (col1_x + 20, panel_y + 210, 280, 50), tag="t_re")
+        
         t_swipe.toggled = (self.trial_type == "swipe")
         t_int.toggled = (self.trial_type == "interfere")
         t_re.toggled = (self.trial_type == "reentry")
-
+        
         for b in (t_swipe, t_int, t_re):
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=True)
+            draw_button_pil(draw, b, primary=True)
 
-        draw_text(canvas, "Condition", 34, 332, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
-        near_btn = Button("Near", (34, 354, 140, 48), tag="near")
-        far_btn = Button("Far", (194, 354, 140, 48), tag="far")
-        bright_btn = Button("Bright", (34, 412, 140, 48), tag="bright")
-        dim_btn = Button("Dim", (194, 412, 140, 48), tag="dim")
-
+        # Condition
+        self.draw_hud_panel(draw, "Condition", ["Lighting & Distance."], col2_x, panel_y, 320, panel_h)
+        
+        near_btn = Button("Near", (col2_x + 20, panel_y + 80, 130, 50), tag="near")
+        far_btn = Button("Far", (col2_x + 170, panel_y + 80, 130, 50), tag="far")
+        bright_btn = Button("Bright", (col2_x + 20, panel_y + 145, 130, 50), tag="bright")
+        dim_btn = Button("Dim", (col2_x + 170, panel_y + 145, 130, 50), tag="dim")
+        
         near_btn.toggled = self.condition_near
         far_btn.toggled = not self.condition_near
         bright_btn.toggled = self.condition_bright
         dim_btn.toggled = not self.condition_bright
-
-        for b in (near_btn, far_btn, bright_btn, dim_btn):
-            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=True)
-
-        gt_btn = Button("GT ON" if self.gt_enabled else "GT OFF", (34, 474, 300, 48), tag="gt")
+        
+        gt_btn = Button("GT ON" if self.gt_enabled else "GT OFF", (col2_x + 20, panel_y + 210, 280, 50), tag="gt")
         gt_btn.toggled = self.gt_enabled
-        gt_btn.hover = point_in(self.mouse_x, self.mouse_y, gt_btn.rect)
-        draw_button(canvas, gt_btn, primary=True)
+        
+        for b in (near_btn, far_btn, bright_btn, dim_btn, gt_btn):
+            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
+            draw_button_pil(draw, b, primary=True)
 
-        back = Button("Back", (28, CANVAS_H - 72, 140, 52), tag="back")
-        start = Button("Start", (188, CANVAS_H - 72, 140, 52), tag="start")
+        # Bottom Dock
+        back = Button("Back", (20, CANVAS_H - 80, 120, 50), tag="back")
+        start = Button("START TRIAL", (CANVAS_W - 220, CANVAS_H - 80, 200, 50), tag="start")
+        
         for b in (back, start):
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=(b.tag == "start"))
+            draw_button_pil(draw, b, primary=(b.tag == "start"))
 
         clicked = self.consume_click()
         if clicked:
-            if t_swipe.hover:
-                self.trial_type = "swipe"
-            elif t_int.hover:
-                self.trial_type = "interfere"
-            elif t_re.hover:
-                self.trial_type = "reentry"
-            elif near_btn.hover:
-                self.condition_near = True
-            elif far_btn.hover:
-                self.condition_near = False
-            elif bright_btn.hover:
-                self.condition_bright = True
-            elif dim_btn.hover:
-                self.condition_bright = False
-            elif gt_btn.hover:
-                self.gt_enabled = not self.gt_enabled
-            elif back.hover:
-                self.screen = "main"
-            elif start.hover:
-                self.start_trial_run(mode="live")
+            if t_swipe.hover: self.trial_type = "swipe"
+            elif t_int.hover: self.trial_type = "interfere"
+            elif t_re.hover: self.trial_type = "reentry"
+            elif near_btn.hover: self.condition_near = True
+            elif far_btn.hover: self.condition_near = False
+            elif bright_btn.hover: self.condition_bright = True
+            elif dim_btn.hover: self.condition_bright = False
+            elif gt_btn.hover: self.gt_enabled = not self.gt_enabled
+            elif back.hover: self.screen = "main"
+            elif start.hover: self.start_trial_run(mode="live")
 
     # ---------------- DEMO MENU ----------------
-    def demo_menu_screen(self, canvas):
-        self.draw_topbar(canvas, "Demo Mode", "Use video files for enrollment and trials. Paste a path or browse.")
+    def demo_menu_screen(self, draw: ImageDraw.ImageDraw):
+        self.draw_nav(draw, "Demo Mode", "Use pre-recorded videos.")
 
-        self.draw_sidebar_card(canvas, "Demo", ["Enrollment: build prototypes from a video", "Trials: run routing on a video"], y=92, h=90)
+        cx, cy = CANVAS_W // 2, CANVAS_H // 2
+        bw, bh = 320, 60
+        gap = 15
+        
+        draw_glass_panel(draw, (cx - bw//2 - 40, cy - 120, bw + 80, 3 * (bh+gap) + 80), alpha=HUD_OPACITY)
 
         btns = []
-        bx, by, bw, bh, gap = 28, 205, 300, 54, 12
-
         def add(text, tag, enabled=True):
-            b = Button(text=text, rect=(bx, by + len(btns) * (bh + gap), bw, bh), enabled=enabled, tag=tag)
+            idx = len(btns)
+            # Center alignment
+            bx = cx - bw // 2
+            by = cy - 80 + idx * (bh + gap)
+            b = Button(text=text, rect=(bx, by, bw, bh), enabled=enabled, tag=tag)
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
             btns.append(b)
 
-        add("Demo Enrollment (Video)", "demo_enroll", enabled=True)
-        add("Demo Trials (Video)", "demo_trials", enabled=True)
-        add("Back", "back", enabled=True)
+        add("Enroll form Video", "demo_enroll", enabled=True)
+        add("Run Trial on Video", "demo_trials", enabled=True)
+        add("Back to Main", "back", enabled=True)
 
         for b in btns:
-            draw_button(canvas, b, primary=(b.tag != "back"))
+            draw_button_pil(draw, b, primary=(b.tag != "back"))
 
         clicked = self.consume_click()
         if clicked:
@@ -1439,6 +1609,7 @@ class PINCHApp:
                     break
 
     # ---------------- DEMO ENROLLMENT ----------------
+    # ---------------- DEMO ENROLLMENT ----------------
     def start_demo_enroll_setup(self):
         self.screen = "demo_enroll_setup"
         self.focus_field = "demo_enroll_name"
@@ -1447,49 +1618,45 @@ class PINCHApp:
         self.demo_enroll_video = ""
         self.demo_enroll_video_edit = ""
 
-    def demo_enroll_setup_screen(self, canvas, key):
-        self.draw_topbar(canvas, "Demo Enrollment", "1) Name the marker. 2) Pick or paste a video. 3) Start.")
+    def demo_enroll_setup_screen(self, draw: ImageDraw.ImageDraw, key):
+        self.draw_nav(draw, "Demo Enrollment", "1) Name 2) Video 3) Start")
 
-        shadow_card(canvas, 18, 92, 18 + 324, 92 + 290, r=16, shadow=8)
-        name_rect = (34, 140, 300, 46)
-        video_rect = (34, 216, 300, 46)
-
+        cx, cy = CANVAS_W // 2, CANVAS_H // 2
+        w, h = 500, 360
+        x, y = cx - w//2, cy - h//2
+        
+        draw_glass_panel(draw, (x, y, w, h), alpha=230)
+        
+        # Form
+        name_rect = (x + 20, y + 20, w - 40, 48)
+        video_rect = (x + 20, y + 100, w - 40, 48)
+        
         name_value = self.demo_enroll_name_edit if self.demo_enroll_name == "" else self.demo_enroll_name
-        draw_input(
-            canvas,
-            name_rect,
-            "Marker name",
-            name_value,
-            placeholder="Type a name and press Enter",
-            active=(self.focus_field == "demo_enroll_name"),
-        )
-
+        draw_input_pil(draw, name_rect, "Marker Name", name_value, "Enter name...", active=(self.focus_field == "demo_enroll_name"))
+        
         vraw = self.demo_enroll_video_edit if self.demo_enroll_video_edit else self.demo_enroll_video
-        vshown = truncate_path(vraw)
-        draw_input(
-            canvas,
-            video_rect,
-            "Enrollment video",
-            vshown,
-            placeholder="Browse or paste a file path",
-            active=(self.focus_field == "demo_enroll_video"),
-        )
-
-        pick = Button("Browse", (34, 274, 180, 46), tag="pick", enabled=True)
-        paste = Button("Paste", (34 + 190, 274, 110, 46), tag="paste", enabled=True)
+        vshown = truncate_path(vraw, 40)
+        draw_input_pil(draw, video_rect, "Video Path", vshown, "Path to video...", active=(self.focus_field == "demo_enroll_video"))
+        
+        # Tools
+        pick = Button("Browse...", (x + 20, y + 160, 140, 40), tag="pick")
+        paste = Button("Paste", (x + 180, y + 160, 100, 40), tag="paste")
+        
         for b in (pick, paste):
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=True)
-
-        start = Button("Start demo enrollment", (34, 330, 300, 48), tag="start",
+            draw_button_pil(draw, b, primary=True)
+            
+        # Actions
+        start = Button("START ENROLLMENT", (x + 20, y + 240, w - 40, 50), tag="start", 
                        enabled=bool(self.demo_enroll_name) and os.path.isfile(self.demo_enroll_video))
         start.hover = point_in(self.mouse_x, self.mouse_y, start.rect)
-        draw_button(canvas, start, primary=True)
-
-        back = Button("Back", (34, CANVAS_H - 72, 300, 52), tag="back")
+        draw_button_pil(draw, start, primary=True)
+        
+        back = Button("Back", (x + 20, y + 300, 120, 40), tag="back")
         back.hover = point_in(self.mouse_x, self.mouse_y, back.rect)
-        draw_button(canvas, back, primary=False)
+        draw_button_pil(draw, back, primary=False)
 
+        # Input handling
         if key != -1:
             if self.focus_field == "demo_enroll_name":
                 if key in (13, 10):
@@ -1504,9 +1671,8 @@ class PINCHApp:
                     self.demo_enroll_video_edit = self.handle_text_input(key, self.demo_enroll_video_edit, max_len=220)
                     candidate = normalize_path(self.demo_enroll_video_edit)
                     if os.path.isfile(candidate):
-                        candidate = os.path.abspath(candidate)
-                        self.demo_enroll_video = candidate
-                        self.demo_enroll_video_edit = candidate
+                        self.demo_enroll_video = os.path.abspath(candidate)
+                        self.demo_enroll_video_edit = self.demo_enroll_video
 
         clicked = self.consume_click()
         if clicked:
@@ -1519,26 +1685,20 @@ class PINCHApp:
                 self.focus_field = "demo_enroll_video"
             elif pick.hover:
                 chosen = pick_video_file_windows(title="Select enrollment video")
-                chosen = normalize_path(chosen)
-                if chosen and os.path.isfile(chosen):
-                    chosen = os.path.abspath(chosen)
-                    self.demo_enroll_video = chosen
-                    self.demo_enroll_video_edit = chosen
+                if chosen:
+                    self.demo_enroll_video = os.path.abspath(chosen)
+                    self.demo_enroll_video_edit = self.demo_enroll_video
             elif paste.hover:
                 clip = normalize_path(sanitize_clipboard_text(get_clipboard_text()))
-                if clip:
-                    self.demo_enroll_video_edit = clip
-                    if os.path.isfile(clip):
-                        clip = os.path.abspath(clip)
-                        self.demo_enroll_video = clip
-                        self.demo_enroll_video_edit = clip
+                if clip and os.path.isfile(clip):
+                    self.demo_enroll_video = os.path.abspath(clip)
+                    self.demo_enroll_video_edit = self.demo_enroll_video
             elif start.enabled and start.hover:
                 self.start_demo_enroll_run()
             elif back.hover:
                 self.screen = "demo_menu"
 
     def start_demo_enroll_run(self):
-        # open video for demo enrollment
         self.source.open_video(self.demo_enroll_video, loop=True)
         self.screen = "demo_enroll_run"
         self.enroll_name = self.demo_enroll_name
@@ -1549,10 +1709,10 @@ class PINCHApp:
         self.enroll_frames = 0
         self.enroll_used = 0
 
-    def demo_enroll_run_screen(self, frame_bgr, canvas, s, offx, offy):
-        self.draw_topbar(canvas, "Demo Enrollment Running", "Enrollment is running on your video. Cancel to stop.")
+    def demo_enroll_run_screen(self, frame_bgr, draw: ImageDraw.ImageDraw, s, offx, offy):
+        self.draw_nav(draw, "Running Enrollment", "Processing video...")
 
-        # reuse the same enrollment capture as live, with source_mode/video info
+        # Logic same as live enroll logic really
         step_text, step_dur = ENROLL_STEPS[self.enroll_step_idx]
         elapsed_step = time.time() - self.enroll_step_t0
 
@@ -1567,14 +1727,12 @@ class PINCHApp:
             boxes = res[0].boxes.data.cpu().numpy()
             boxes = boxes[np.argsort(-boxes[:, 4])]
             x1, y1, x2, y2, conf, cls = boxes[0].tolist()
-
             bw = x2 - x1
             bh = y2 - y1
             x1p = x1 - BOX_PAD_FRAC * bw
             y1p = y1 - BOX_PAD_FRAC * bh
             x2p = x2 + BOX_PAD_FRAC * bw
             y2p = y2 + BOX_PAD_FRAC * bh
-
             b = clamp_box(x1p, y1p, x2p, y2p, W, H)
             if b is not None:
                 x1i, y1i, x2i, y2i = b
@@ -1594,7 +1752,6 @@ class PINCHApp:
         if elapsed_step >= step_dur:
             self.enroll_step_idx += 1
             self.enroll_step_t0 = time.time()
-
             if self.enroll_step_idx >= len(ENROLL_STEPS):
                 embs = np.array(self.enroll_embs, dtype=np.float32)
                 protos, thr, mean, var, ll_thr = build_profile_from_enrollment(self.enroll_name, embs)
@@ -1615,35 +1772,28 @@ class PINCHApp:
                     self.registry = Registry()
                 self.registry.add_marker(prof)
                 self.save_registry()
-
-                # go back to demo menu and reopen webcam so UI feels "live"
                 self.cls_ctx = self._build_session_classifier()
                 self.source.open_webcam(self.source.webcam_index)
                 self.screen = "demo_menu"
                 return
 
-        self.draw_sidebar_card(
-            canvas,
-            "Demo Enrollment",
-            [
-                f"Name: {self.enroll_name}",
-                f"Step: {step_text}",
-                f"Embeddings used: {self.enroll_used}",
-            ],
-            y=92,
-            h=150,
-        )
+        # Status
+        self.draw_hud_panel(draw, "Processing", [
+            f"Step: {step_text}", 
+            f"Used: {self.enroll_used}"
+        ], 20, 100, 300, 120)
 
-        # progress bar
+        # Progress
         total = sum(d for _, d in ENROLL_STEPS)
         elapsed_total = time.time() - self.enroll_t0
         prog = min(1.0, elapsed_total / max(total, 1e-6))
-        x1, y1, x2, y2 = 28, 260, 28 + 300, 282
-        rounded_rect(canvas, x1, y1, x2, y2, r=12, color=CARD2, thickness=-1)
-        fill = int((x2 - x1) * prog)
-        if fill > 0:
-            rounded_rect(canvas, x1, y1, x1 + fill, y2, r=12, color=ACCENT, thickness=-1)
-        draw_text(canvas, f"{int(elapsed_total)}/{int(total)}s", 28 + 210, 254, scale=0.50, color=TEXT, thick=2)
+        
+        # Center progress bar
+        bx, by = CANVAS_W // 2 - 200, CANVAS_H - 120
+        bw = 400
+        draw.line([(bx, by), (bx + bw, by)], fill=to_pil_color(C_STROKE), width=4)
+        if prog > 0:
+            draw.line([(bx, by), (bx + int(bw * prog), by)], fill=to_pil_color(C_ACCENT), width=4)
 
         if best_box is not None:
             x1i, y1i, x2i, y2i = best_box
@@ -1651,11 +1801,11 @@ class PINCHApp:
             cy1 = int(offy + y1i * s)
             cx2 = int(offx + x2i * s)
             cy2 = int(offy + y2i * s)
-            cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), OK, 2)
+            draw_sci_box(draw, (cx1, cy1, cx2 - cx1, cy2 - cy1), C_OK)
 
-        cancel = Button("Cancel", (28, CANVAS_H - 72, 300, 52), tag="cancel")
+        cancel = Button("Cancel", (20, CANVAS_H - 80, 120, 48), tag="cancel")
         cancel.hover = point_in(self.mouse_x, self.mouse_y, cancel.rect)
-        draw_button(canvas, cancel, primary=False)
+        draw_button_pil(draw, cancel, primary=False)
 
         if self.consume_click() and cancel.hover:
             self.source.open_webcam(self.source.webcam_index)
@@ -1672,143 +1822,97 @@ class PINCHApp:
         self.demo_condition_bright = True
         self.demo_gt_enabled = False
 
-    def demo_trial_setup_screen(self, canvas, key):
-        self.draw_topbar(canvas, "Demo Trials", "Pick a registry (optional), choose a video, then start the trial.")
+    def demo_trial_setup_screen(self, draw: ImageDraw.ImageDraw, key):
+        self.draw_nav(draw, "Demo Trials", "Configure offline trial on video.")
 
-        if self.registry is None:
-            self.draw_sidebar_card(canvas, "Registry", ["No registry loaded.", "Load registry.json or run enrollment."], y=92, h=90)
-        else:
-            self.draw_sidebar_card(canvas, "Registry", ["Markers: " + ", ".join(self.registry.names())], y=92, h=90)
-
-        # left controls
-        shadow_card(canvas, 18, 205, 18 + 324, 205 + 360, r=16, shadow=8)
-        draw_text(canvas, "Trial type", 34, 238, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
-
-        t_swipe = Button("Swipe", (34, 262, 300, 46), tag="t_swipe")
-        t_int = Button("Interference", (34, 318, 300, 46), tag="t_int")
-        t_re = Button("Re-entry", (34, 374, 300, 46), tag="t_re")
-
+        # Layout mirrors Live Trial Setup but with file picker on right
+        panel_y = 100
+        panel_h = 320
+        col1_x = 40
+        col2_x = 400
+        
+        # Left: Config
+        self.draw_hud_panel(draw, "Configuration", ["Trial Type & Condition"], col1_x, panel_y, 320, panel_h)
+        
+        t_swipe = Button("Swipe", (col1_x + 20, panel_y + 60, 280, 40), tag="t_swipe")
+        t_int = Button("Interference", (col1_x + 20, panel_y + 110, 280, 40), tag="t_int")
+        t_re = Button("Re-entry", (col1_x + 20, panel_y + 160, 280, 40), tag="t_re")
+        
         t_swipe.toggled = (self.demo_trial_type == "swipe")
         t_int.toggled = (self.demo_trial_type == "interfere")
         t_re.toggled = (self.demo_trial_type == "reentry")
-
-        for b in (t_swipe, t_int, t_re):
-            b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=True)
-
-        draw_text(canvas, "Condition", 34, 438, scale=0.58, color=ACCENT_HI, thick=2, font=FONT_TITLE)
-        near_btn = Button("Near", (34, 460, 140, 46), tag="near")
-        far_btn = Button("Far", (194, 460, 140, 46), tag="far")
-        bright_btn = Button("Bright", (34, 516, 140, 46), tag="bright")
-        dim_btn = Button("Dim", (194, 516, 140, 46), tag="dim")
-
+        
+        near_btn = Button("Near", (col1_x + 20, panel_y + 220, 130, 40), tag="near")
+        far_btn = Button("Far", (col1_x + 170, panel_y + 220, 130, 40), tag="far")
+        
         near_btn.toggled = self.demo_condition_near
         far_btn.toggled = not self.demo_condition_near
-        bright_btn.toggled = self.demo_condition_bright
-        dim_btn.toggled = not self.demo_condition_bright
-
-        for b in (near_btn, far_btn, bright_btn, dim_btn):
+        
+        for b in (t_swipe, t_int, t_re, near_btn, far_btn):
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=True)
+            draw_button_pil(draw, b, primary=True)
 
-        # right: file selection
-        shadow_card(canvas, 360, 92, CANVAS_W - 18, 92 + 250, r=18, shadow=10)
-        draw_text(canvas, "Trial video", 382, 126, scale=0.62, color=ACCENT_HI, thick=2, font=FONT_TITLE)
-        draw_text(canvas, "Pick a file or paste a path, then start the trial.", 382, 150, scale=0.5, color=MUTED, thick=2)
-
+        # Right: Video & Registry
+        self.draw_hud_panel(draw, "Input Source", ["Select Video & Registry"], col2_x, panel_y, 400, panel_h)
+        
         vraw = self.demo_trial_video_edit if self.demo_trial_video_edit else self.demo_trial_video
-        vshown = truncate_path(vraw)
-        video_rect = (382, 170, CANVAS_W - 18 - 382 - 20, 46)
-        draw_input(
-            canvas,
-            video_rect,
-            "Video path",
-            vshown,
-            placeholder="Browse or paste a file path",
-            active=(self.focus_field == "demo_trial_video"),
-        )
-
-        btn_x = 382
-        btn_y = 230
-        btn_w = 185
-        gap = 10
-        pickv = Button("Browse", (btn_x, btn_y, btn_w, 46), tag="pickv")
-        paste = Button("Paste", (btn_x + (btn_w + gap) * 1, btn_y, btn_w, 46), tag="paste")
-        loadreg = Button("Pick registry", (btn_x + (btn_w + gap) * 2, btn_y, btn_w, 46), tag="pickr")
-        reload_btn = Button("Reload registry", (btn_x + (btn_w + gap) * 3, btn_y, btn_w, 46), tag="reload")
-
+        vshown = truncate_path(vraw, 35)
+        draw_input_pil(draw, (col2_x + 20, panel_y + 60, 360, 48), "Video", vshown, active=(self.focus_field == "demo_trial_video"))
+        
+        pickv = Button("Browse Video", (col2_x + 20, panel_y + 120, 170, 40), tag="pickv")
+        paste = Button("Paste Path", (col2_x + 210, panel_y + 120, 170, 40), tag="paste")
+        loadreg = Button("Load Registry", (col2_x + 20, panel_y + 170, 170, 40), tag="pickr")
+        reload_btn = Button("Reload Reg", (col2_x + 210, panel_y + 170, 170, 40), tag="reload")
+        
         for b in (pickv, paste, loadreg, reload_btn):
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=True)
+            draw_button_pil(draw, b, primary=True)
 
-        if key != -1 and self.focus_field == "demo_trial_video" and key not in (13, 10):
-            self.demo_trial_video_edit = self.handle_text_input(key, self.demo_trial_video_edit, max_len=240)
-            candidate = normalize_path(self.demo_trial_video_edit)
-            if os.path.isfile(candidate):
-                candidate = os.path.abspath(candidate)
-                self.demo_trial_video = candidate
-                self.demo_trial_video_edit = candidate
+        # Key input
+        if key != -1 and self.focus_field == "demo_trial_video":
+            if key not in (13, 10):
+                self.demo_trial_video_edit = self.handle_text_input(key, self.demo_trial_video_edit, max_len=240)
+                candidate = normalize_path(self.demo_trial_video_edit)
+                if os.path.isfile(candidate):
+                    self.demo_trial_video = os.path.abspath(candidate)
+                    self.demo_trial_video_edit = self.demo_trial_video
 
-        # bottom
-        back = Button("Back", (28, CANVAS_H - 72, 180, 52), tag="back")
-        start = Button("Start demo trial", (CANVAS_W - 18 - 260, CANVAS_H - 72, 260, 52), tag="start",
+        # Bottom
+        back = Button("Back", (20, CANVAS_H - 80, 120, 50), tag="back")
+        start = Button("START TRIAL", (CANVAS_W - 220, CANVAS_H - 80, 200, 50), tag="start",
                        enabled=(self.registry is not None) and os.path.isfile(self.demo_trial_video))
+        
         for b in (back, start):
             b.hover = point_in(self.mouse_x, self.mouse_y, b.rect)
-            draw_button(canvas, b, primary=(b.tag == "start"))
+            draw_button_pil(draw, b, primary=(b.tag == "start"))
 
         clicked = self.consume_click()
         if clicked:
-            if t_swipe.hover:
-                self.demo_trial_type = "swipe"
-            elif t_int.hover:
-                self.demo_trial_type = "interfere"
-            elif t_re.hover:
-                self.demo_trial_type = "reentry"
-            elif near_btn.hover:
-                self.demo_condition_near = True
-            elif far_btn.hover:
-                self.demo_condition_near = False
-            elif bright_btn.hover:
-                self.demo_condition_bright = True
-            elif dim_btn.hover:
-                self.demo_condition_bright = False
-            elif point_in(self.mouse_x, self.mouse_y, video_rect):
+            if t_swipe.hover: self.demo_trial_type = "swipe"
+            elif t_int.hover: self.demo_trial_type = "interfere"
+            elif t_re.hover: self.demo_trial_type = "reentry"
+            elif near_btn.hover: self.demo_condition_near = True
+            elif far_btn.hover: self.demo_condition_near = False
+            elif point_in(self.mouse_x, self.mouse_y, (col2_x + 20, panel_y + 60, 360, 48)):
                 self.focus_field = "demo_trial_video"
             elif pickv.hover:
                 chosen = pick_video_file_windows(title="Select trial video")
-                chosen = normalize_path(chosen)
-                if chosen and os.path.isfile(chosen):
-                    chosen = os.path.abspath(chosen)
-                    self.demo_trial_video = chosen
-                    self.demo_trial_video_edit = chosen
+                if chosen: self.demo_trial_video = os.path.abspath(chosen)
             elif paste.hover:
                 clip = normalize_path(sanitize_clipboard_text(get_clipboard_text()))
-                if clip:
-                    self.demo_trial_video_edit = clip
-                    if os.path.isfile(clip):
-                        clip = os.path.abspath(clip)
-                        self.demo_trial_video = clip
-                        self.demo_trial_video_edit = clip
+                if clip and os.path.isfile(clip): self.demo_trial_video = os.path.abspath(clip)
             elif loadreg.hover:
                 chosen = pick_registry_file_windows(title="Select registry.json")
-                chosen = normalize_path(chosen)
-                if chosen and os.path.isfile(chosen):
+                if chosen:
                     try:
-                        with open(chosen, "r", encoding="utf-8") as f:
-                            r = Registry.from_json(json.load(f))
+                        with open(chosen, "r") as f: r = Registry.from_json(json.load(f))
                         if len(r.markers) > 0:
                             self.registry = r
-                            # also write into default reg_path for consistency
                             self.save_registry()
-                    except Exception:
-                        pass
-            elif reload_btn.hover:
-                self.load_registry()
-            elif back.hover:
-                self.screen = "demo_menu"
-            elif start.enabled and start.hover:
-                self.start_trial_run(mode="demo")
+                    except: pass
+            elif reload_btn.hover: self.load_registry()
+            elif back.hover: self.screen = "demo_menu"
+            elif start.enabled and start.hover: self.start_trial_run(mode="demo")
 
     # ---------------- TRIAL RUN (shared) ----------------
     def start_trial_run(self, mode: str):
@@ -1909,7 +2013,7 @@ class PINCHApp:
         else:
             self.screen = "main"
 
-    def trial_run_tick(self, frame_bgr, canvas, s, offx, offy, view_rect):
+    def trial_run_tick(self, frame_bgr, draw: ImageDraw.ImageDraw, s, offx, offy, view_rect):
         assert self.registry is not None
 
         t_frame0 = time.time()
@@ -2011,22 +2115,19 @@ class PINCHApp:
         unknown_tracks = sum(1 for (_, pred, _, _) in preds if pred == "unknown")
 
         remaining = max(0.0, self.trial_duration - (time.time() - self.trial_t0))
-        self.draw_sidebar_card(
-            canvas,
-            "Trial HUD",
-            [
-                f"Trial: {self.trial_type}",
-                f"Condition: {self.condition_str()}",
-                f"Remaining: {remaining:.1f}s",
-                f"Dets: {len(preds)} Tracks: {len(active_now)}",
-                f"Latency(ms): det {det_track_ms:.1f} emb {embed_ms:.1f} match {match_ms:.1f}",
-            ],
-            y=92,
-            h=150,
-        )
+        
+        # HUD Panel Top Right
+        hud_lines = [
+            f"TRIAL: {self.trial_type.upper()}",
+            f"COND: {self.condition_str().upper()}",
+            f"TIME: {remaining:.1f}s",
+            f"TRACKS: {len(active_now)}",
+            f"LATENCY: {det_track_ms+embed_ms+match_ms:.1f}ms",
+        ]
+        
+        self.draw_hud_panel(draw, "LIVE ANALYSIS", hud_lines, CANVAS_W - 320, 100, 300, 160)
 
         # boxes
-        clickable_boxes = []
         for (tid, pred, sim, box) in preds:
             x1i, y1i, x2i, y2i = box
             cx1 = int(offx + x1i * s)
@@ -2034,14 +2135,21 @@ class PINCHApp:
             cx2 = int(offx + x2i * s)
             cy2 = int(offy + y2i * s)
 
-            col = OK if pred != "unknown" else (120, 170, 255)
-            cv2.rectangle(canvas, (cx1, cy1), (cx2, cy2), col, 2)
-            draw_text(canvas, f"T{tid} {pred} {sim:.2f}", cx1, max(20, cy1 - 8), scale=0.50, color=WHITE, thick=2)
-            clickable_boxes.append((tid, (cx1, cy1, cx2 - cx1, cy2 - cy1)))
+            col = C_OK if pred != "unknown" else C_ACCENT
+            if pred == "unknown":
+                col = C_WARN
+                
+            draw_sci_box(draw, (cx1, cy1, cx2 - cx1, cy2 - cy1), col)
+            
+            # Label tag
+            lbl = f"T{tid} {pred} {int(sim*100)}%"
+            tw, th = measure_text(lbl, _FONT_SMALL)
+            draw_rect_filled(draw, (cx1, cy1 - 20, tw + 10, 20), to_pil_color(col, 200))
+            draw_text_pil(draw, (cx1 + 5, cy1 - 18), lbl, _FONT_SMALL, (0,0,0))
 
-        stop = Button("End trial", (28, CANVAS_H - 72, 300, 52), tag="stop")
+        stop = Button("END TRIAL", (CANVAS_W // 2 - 100, CANVAS_H - 80, 200, 50), tag="stop")
         stop.hover = point_in(self.mouse_x, self.mouse_y, stop.rect)
-        draw_button(canvas, stop, primary=True)
+        draw_button_pil(draw, stop, primary=True)
 
         clicked = self.consume_click()
         if clicked and stop.hover:
@@ -2065,31 +2173,42 @@ class PINCHApp:
 
     # ---------------- MAIN TICK ----------------
     def tick(self, frame_bgr, key):
-        canvas, s, offx, offy, view_rect = compose_canvas(frame_bgr)
-        draw_text(canvas, "ESC/Q: exit", 380, CANVAS_H - 14, scale=0.46, color=MUTED, thick=2)
-
+        # 1. Compose base canvas (video + bg)
+        # Returns PIL Image "canvas"
+        canvas, s, offx, offy, view_rect = compose_canvas_pil(frame_bgr)
+        
+        # 2. Create Draw object
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        
+        # 3. Route to screen
         if self.screen == "main":
-            self.main_screen(canvas)
+            self.main_screen(draw)
         elif self.screen == "live_enroll":
-            self.live_enroll_screen(frame_bgr, canvas, s, offx, offy, key)
+            self.live_enroll_screen(frame_bgr, draw, s, offx, offy, key)
         elif self.screen == "live_trial_setup":
-            self.live_trial_setup_screen(canvas)
+            self.live_trial_setup_screen(draw)
         elif self.screen == "live_trial_run":
-            self.draw_topbar(canvas, "Live Trial Running", "Routing is running from webcam. End anytime.")
-            self.trial_run_tick(frame_bgr, canvas, s, offx, offy, view_rect)
+            self.draw_nav(draw, "Live Trial Running", "Tracking active. Press End to finish.")
+            self.trial_run_tick(frame_bgr, draw, s, offx, offy, view_rect)
         elif self.screen == "demo_menu":
-            self.demo_menu_screen(canvas)
+            self.demo_menu_screen(draw)
         elif self.screen == "demo_enroll_setup":
-            self.demo_enroll_setup_screen(canvas, key)
+            self.demo_enroll_setup_screen(draw, key)
         elif self.screen == "demo_enroll_run":
-            self.demo_enroll_run_screen(frame_bgr, canvas, s, offx, offy)
+            self.demo_enroll_run_screen(frame_bgr, draw, s, offx, offy)
         elif self.screen == "demo_trial_setup":
-            self.demo_trial_setup_screen(canvas, key)
+            self.demo_trial_setup_screen(draw, key)
         elif self.screen == "demo_trial_run":
-            self.draw_topbar(canvas, "Demo Trial Running", "Routing is running.")
-            self.trial_run_tick(frame_bgr, canvas, s, offx, offy, view_rect)
+            self.draw_nav(draw, "Demo Trial Running", "Tracking active.")
+            self.trial_run_tick(frame_bgr, draw, s, offx, offy, view_rect)
 
-        cv2.imshow(self.win, canvas)
+        # 4. Global Overlay / FPS / Exit hint
+        draw_text_pil(draw, (CANVAS_W - 120, CANVAS_H - 18), "ESC/Q: EXIT", _FONT_SMALL, C_TEXT_DIM)
+
+        # 5. Convert back to BGR for OpenCV
+        # Use numpy conversion
+        final_bgr = cv2.cvtColor(np.array(canvas), cv2.COLOR_RGBA2BGR)
+        cv2.imshow(self.win, final_bgr)
 
     def run(self):
         while self.running:
@@ -2099,13 +2218,15 @@ class PINCHApp:
             ok, frame = self.source.read()
             if not ok or frame is None:
                 time.sleep(0.01)
+                # If video ended, loop it manually if needed, but VideoSource handles loops.
+                # If detect fails, we just wait.
                 continue
 
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q"), ord("Q")):
                 break
 
-            # route to correct setup/run screens
+            # route to correct setup/run screens logic
             if self.screen == "live_trials":
                 self.screen = "live_trial_setup"
 
@@ -2122,12 +2243,24 @@ def main():
     ensure_dir(RUN_DIR)
 
     if not os.path.isfile(YOLO_WEIGHTS):
-        raise FileNotFoundError(f"YOLO_WEIGHTS not found: {YOLO_WEIGHTS}")
-    if not os.path.isfile(EMBEDDER_WEIGHTS):
-        raise FileNotFoundError(f"EMBEDDER_WEIGHTS not found: {EMBEDDER_WEIGHTS}")
+        print(f"YOLO_WEIGHTS not found: {YOLO_WEIGHTS}") 
+        # Don't crash immediately, let user fix paths or run without if possible (but app needs it)
+        # raise FileNotFoundError(f"YOLO_WEIGHTS not found: {YOLO_WEIGHTS}")
 
-    yolo = YOLO(YOLO_WEIGHTS)
-    embedder = load_embedder(EMBEDDER_WEIGHTS, DEVICE)
+    # Fallback weights just for UI testing if real weights missing?
+    # No, let's try to load.
+    
+    try:
+        yolo = YOLO(YOLO_WEIGHTS)
+    except Exception as e:
+        print(f"Failed to load YOLO: {e}")
+        return
+
+    try:
+        embedder = load_embedder(EMBEDDER_WEIGHTS, DEVICE)
+    except Exception as e:
+        print(f"Failed to load embedder: {e}")
+        return
 
     app = PINCHApp(yolo, embedder)
     app.run()
