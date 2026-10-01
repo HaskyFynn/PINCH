@@ -1,0 +1,17 @@
+[
+  {
+    "threads": 1,
+    "detector_ms": 1047.5514999125153,
+    "embedding_four_ms": 2160.652849939652
+  },
+  {
+    "threads": 2,
+    "detector_ms": 757.6904000015929,
+    "embedding_four_ms": 1425.7293000118807
+  },
+  {
+    "threads": 4,
+    "detector_ms": 756.9206999614835,
+    "embedding_four_ms": 813.3792999433354
+  }
+]

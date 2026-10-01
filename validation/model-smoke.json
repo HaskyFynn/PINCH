@@ -1,0 +1,10 @@
+{
+  "processed_frames": 12,
+  "elapsed_seconds": 3.9616556998807937,
+  "processing_fps": 3.029036571845726,
+  "median_processing_ms": 276.3183999340981,
+  "p95_processing_ms": 443.52994497166924,
+  "latency_sample_count": 12,
+  "identity_accuracy": null,
+  "note": "Actual trained models; 12 unlabeled frames from local Video1.mp4. Smoke test only; no four-marker accuracy claim."
+}

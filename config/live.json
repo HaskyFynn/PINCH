@@ -1,0 +1,18 @@
+{
+  "detector": "letsgo/best.pt",
+  "embedder": "letsgo/embedder_resnet18_triplet.pt",
+  "registry": "data/registry.json",
+  "runs": "runs/live",
+  "device": "cpu",
+  "image_size": 640,
+  "detector_confidence": 0.08,
+  "detector_iou": 0.7,
+  "max_detections": 32,
+  "identity_margin": 0.01,
+  "identity_confirm_frames": 3,
+  "identity_hold_seconds": 0.6,
+  "roi_hold_seconds": 0.4,
+  "identity_confirmation_gap": 3.0,
+  "track_expiry_seconds": 3.0,
+  "use_density": false
+}

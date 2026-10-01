@@ -1,0 +1,27 @@
+# Core
+numpy==1.26.4
+opencv-python==4.10.0.84
+
+# For plots / CSV logs (optional but recommended)
+pandas==2.2.2
+matplotlib==3.9.0
+
+# MediaPipe (for baseline scripts)
+mediapipe==0.10.14
+
+# ---- TFLite runtime (choose ONE depending on OS) ----
+# Windows / macOS / many Linux installs:
+tensorflow==2.16.1
+# Lightweight alternative (often easiest on Raspberry Pi / some Linux):
+# tflite-runtime==2.14.0
+
+# ---- Ultralytics YOLO + ByteTrack tracking ----
+ultralytics==8.3.11
+torch==2.3.1
+torchvision==0.18.1
+
+# Quality-of-life
+tqdm==4.66.4
+
+
+# python exp1.py --pt {path} 

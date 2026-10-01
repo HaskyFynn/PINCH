@@ -1,0 +1,51 @@
+test_inseparable_scores_report_no_safe_threshold (test_calibration.CalibrationTests.test_inseparable_scores_report_no_safe_threshold) ... ok
+test_requires_positive_and_negative_samples (test_calibration.CalibrationTests.test_requires_positive_and_negative_samples) ... ok
+test_selected_threshold_rejects_negative_boundary (test_calibration.CalibrationTests.test_selected_threshold_rejects_negative_boundary) ... ok
+test_all_views_required_and_profile_roundtrip (test_core.EnrollmentTests.test_all_views_required_and_profile_roundtrip) ... ok
+test_configuration_rejects_incompatible_recovery_thresholds (test_core.EnrollmentTests.test_configuration_rejects_incompatible_recovery_thresholds) ... ok
+test_empty_and_partial_enrollment_do_not_save (test_core.EnrollmentTests.test_empty_and_partial_enrollment_do_not_save) ... ok
+test_quality_gating_reports_reason (test_core.EnrollmentTests.test_quality_gating_reports_reason) ... ok
+test_sample_interval_limits_duplicate_frames (test_core.EnrollmentTests.test_sample_interval_limits_duplicate_frames) ... ok
+test_confirmation_not_accumulated_over_long_gaps (test_core.IdentityTests.test_confirmation_not_accumulated_over_long_gaps) ... ok
+test_crossed_track_ids_recover_without_duplicate_names (test_core.IdentityTests.test_crossed_track_ids_recover_without_duplicate_names) ... ok
+test_duplicate_evidence_does_not_invent_second_choice (test_core.IdentityTests.test_duplicate_evidence_does_not_invent_second_choice) ... ok
+test_four_concurrent_identities (test_core.IdentityTests.test_four_concurrent_identities) ... ok
+test_identity_can_correct_after_perfect_old_score (test_core.IdentityTests.test_identity_can_correct_after_perfect_old_score) ... ok
+test_no_detections_expires_name_and_state (test_core.IdentityTests.test_no_detections_expires_name_and_state) ... ok
+test_quality_holds_briefly_then_expires (test_core.IdentityTests.test_quality_holds_briefly_then_expires) ... ok
+test_reentry_new_track_supersedes_absent_owner (test_core.IdentityTests.test_reentry_new_track_supersedes_absent_owner) ... ok
+test_slow_but_consistent_frames_can_confirm (test_core.IdentityTests.test_slow_but_consistent_frames_can_confirm) ... ok
+test_unknown_expires_instead_of_resetting_streak (test_core.IdentityTests.test_unknown_expires_instead_of_resetting_streak) ... ok
+test_ambiguous_and_unenrolled_rejected (test_core.RegistryTests.test_ambiguous_and_unenrolled_rejected) ... ok
+test_atomic_save_backup_and_reload (test_core.RegistryTests.test_atomic_save_backup_and_reload) ... ok
+test_bad_profiles_rejected (test_core.RegistryTests.test_bad_profiles_rejected) ... ok
+test_duplicate_names_rejected_after_trimming (test_core.RegistryTests.test_duplicate_names_rejected_after_trimming) ... ok
+test_legacy_exact_match_without_density (test_core.RegistryTests.test_legacy_exact_match_without_density) ... ok
+test_malformed_density_reports_validation_error (test_core.RegistryTests.test_malformed_density_reports_validation_error) ... ok
+test_missing_enrollment_between_valid_profiles (test_core.RegistryTests.test_missing_enrollment_between_valid_profiles) ... ok
+test_model_mismatch_rejected (test_core.RegistryTests.test_model_mismatch_rejected) ... ok
+test_confirm_replacement_is_explicit (test_desktop.DesktopTests.test_confirm_replacement_is_explicit) ... ok
+test_registry_and_four_rows_render (test_desktop.DesktopTests.test_registry_and_four_rows_render) ... ok
+test_source_and_enrollment_commands (test_desktop.DesktopTests.test_source_and_enrollment_commands) ... ok
+test_view_progress_and_save_controls (test_desktop.DesktopTests.test_view_progress_and_save_controls) ... ok
+test_misses_unknowns_wrong_names_and_unenrolled_are_separate (test_pipeline.EvaluationTests.test_misses_unknowns_wrong_names_and_unenrolled_are_separate) ... ok
+test_predicted_roi_does_not_count_as_a_detection (test_pipeline.EvaluationTests.test_predicted_roi_does_not_count_as_a_detection) ... ok
+test_blur_does_not_remove_detected_rois (test_pipeline.PipelineTests.test_blur_does_not_remove_detected_rois) ... ok
+test_enrollment_does_not_choose_highest_of_several_markers (test_pipeline.PipelineTests.test_enrollment_does_not_choose_highest_of_several_markers) ... ok
+test_enrollment_pauses_for_a_weak_second_marker (test_pipeline.PipelineTests.test_enrollment_pauses_for_a_weak_second_marker) ... ok
+test_four_identities_can_confirm_at_slow_processing_rates (test_pipeline.PipelineTests.test_four_identities_can_confirm_at_slow_processing_rates) ... ok
+test_low_confidence_detections_recover_existing_tracks (test_pipeline.PipelineTests.test_low_confidence_detections_recover_existing_tracks) ... ok
+test_missing_boxes_predicted_briefly_and_then_removed (test_pipeline.PipelineTests.test_missing_boxes_predicted_briefly_and_then_removed) ... ok
+test_mixed_confidence_stages_keep_exact_crop_owners (test_pipeline.PipelineTests.test_mixed_confidence_stages_keep_exact_crop_owners) ... ok
+test_overlap_rejects_appearance_without_hiding_boxes (test_pipeline.PipelineTests.test_overlap_rejects_appearance_without_hiding_boxes) ... ok
+test_real_bytetrack_four_markers_and_batched_embeddings (test_pipeline.PipelineTests.test_real_bytetrack_four_markers_and_batched_embeddings) ... ok
+test_reset_discards_old_registry_identities (test_pipeline.PipelineTests.test_reset_discards_old_registry_identities) ... ok
+test_smoothed_roi_is_not_mistaken_for_a_second_marker (test_pipeline.PipelineTests.test_smoothed_roi_is_not_mistaken_for_a_second_marker) ... ok
+test_bad_registry_import_does_not_stop_the_running_session (test_pipeline.WorkerCommandTests.test_bad_registry_import_does_not_stop_the_running_session) ... ok
+test_stopping_session_leaves_a_valid_preview_state (test_pipeline.WorkerCommandTests.test_stopping_session_leaves_a_valid_preview_state) ... ok
+test_recording_roundtrip_preserves_timing_and_frame_mapping (test_session.SessionTests.test_recording_roundtrip_preserves_timing_and_frame_mapping) ... ok
+
+----------------------------------------------------------------------
+Ran 46 tests in 7.824s
+
+OK
