@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+runs/live/
+runs/replay/
+data/registry.json
+data/registry.json.bak
+*.tmp
+.cache/
+model/
+data/*registry*.json
+data/*registry*.json.bak

@@ -1,0 +1,55 @@
+{
+  "note": "Synthetic repeated copies of the SAME marker recording. This checks detection and load, not four distinct marker identity accuracy.",
+  "measurements": [
+    {
+      "copies_of_same_frame": 1,
+      "raw_detections": 1,
+      "tracked_detections": 1,
+      "usable_crops": 1,
+      "median_processing_ms_after_warmup": 1315.8686999231577,
+      "p95_processing_ms_after_warmup": 2228.690229961648,
+      "names": [
+        "unknown"
+      ]
+    },
+    {
+      "copies_of_same_frame": 2,
+      "raw_detections": 2,
+      "tracked_detections": 2,
+      "usable_crops": 2,
+      "median_processing_ms_after_warmup": 2754.9718997906893,
+      "p95_processing_ms_after_warmup": 6319.018429960122,
+      "names": [
+        "unknown",
+        "unknown"
+      ]
+    },
+    {
+      "copies_of_same_frame": 3,
+      "raw_detections": 3,
+      "tracked_detections": 3,
+      "usable_crops": 3,
+      "median_processing_ms_after_warmup": 1822.6265001576394,
+      "p95_processing_ms_after_warmup": 2286.6670599672943,
+      "names": [
+        "unknown",
+        "unknown",
+        "unknown"
+      ]
+    },
+    {
+      "copies_of_same_frame": 4,
+      "raw_detections": 4,
+      "tracked_detections": 4,
+      "usable_crops": 4,
+      "median_processing_ms_after_warmup": 1984.633699990809,
+      "p95_processing_ms_after_warmup": 2280.1474599167705,
+      "names": [
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ]
+    }
+  ]
+}

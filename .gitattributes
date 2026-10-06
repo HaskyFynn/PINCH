@@ -1,0 +1,9 @@
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.cmd text eol=crlf
+# Preserve the exact user-edited baseline snapshot.
+legacy/pinchreader_20260218.py -text
+# Archived inputs retain original formatting for provenance.
+legacy/** -whitespace
